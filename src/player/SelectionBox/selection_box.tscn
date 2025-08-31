@@ -1,0 +1,18 @@
+[gd_scene load_steps=4 format=3 uid="uid://2xw6pytakgbk"]
+
+[ext_resource type="Script" uid="uid://dgtgo2bjag6by" path="res://src/player/SelectionBox/selection_box.gd" id="1_0m7c2"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_aa3dk"]
+size = Vector3(1.02, 1.02, 1.02)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_0m7c2"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(1, 1, 0, 0.35)
+
+[node name="SelectionBox" type="Node3D"]
+script = ExtResource("1_0m7c2")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_aa3dk")
+surface_material_override/0 = SubResource("StandardMaterial3D_0m7c2")

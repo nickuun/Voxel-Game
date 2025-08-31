@@ -1,0 +1,76 @@
+[gd_scene load_steps=2 format=3 uid="uid://o1exmhovughr"]
+
+[ext_resource type="Script" uid="uid://0g1xh0eog77m" path="res://src/UI/InventoryUI.gd" id="1_lcjh4"]
+
+[node name="Inventory" type="Control"]
+texture_filter = 1
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_lcjh4")
+
+[node name="CenterContainer" type="CenterContainer" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -20.0
+offset_top = -20.0
+offset_right = 20.0
+offset_bottom = 20.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="PanelContainer" parent="CenterContainer"]
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="CenterContainer/Panel"]
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="CenterContainer/Panel/Margin"]
+layout_mode = 2
+
+[node name="Content" type="HBoxContainer" parent="CenterContainer/Panel/Margin/VBox"]
+layout_mode = 2
+
+[node name="ChestPanel" type="PanelContainer" parent="CenterContainer/Panel/Margin/VBox/Content"]
+layout_mode = 2
+
+[node name="ChestPane" type="VBoxContainer" parent="CenterContainer/Panel/Margin/VBox/Content/ChestPanel"]
+layout_mode = 2
+
+[node name="ChestLabel" type="Label" parent="CenterContainer/Panel/Margin/VBox/Content/ChestPanel/ChestPane"]
+layout_mode = 2
+text = "Chest Contents"
+
+[node name="ChestGrid" type="GridContainer" parent="CenterContainer/Panel/Margin/VBox/Content/ChestPanel/ChestPane"]
+layout_mode = 2
+
+[node name="BackpackPanel" type="PanelContainer" parent="CenterContainer/Panel/Margin/VBox/Content"]
+layout_mode = 2
+
+[node name="BackpackPane" type="VBoxContainer" parent="CenterContainer/Panel/Margin/VBox/Content/BackpackPanel"]
+layout_mode = 2
+
+[node name="InventoryLabel" type="Label" parent="CenterContainer/Panel/Margin/VBox/Content/BackpackPanel/BackpackPane"]
+layout_mode = 2
+text = "Inventory"
+
+[node name="InvGrid" type="GridContainer" parent="CenterContainer/Panel/Margin/VBox/Content/BackpackPanel/BackpackPane"]
+layout_mode = 2
+
+[node name="HSeparator" type="HSeparator" parent="CenterContainer/Panel/Margin/VBox/Content/BackpackPanel/BackpackPane"]
+layout_mode = 2
+mouse_filter = 2
+
+[node name="HotbarLabel" type="Label" parent="CenterContainer/Panel/Margin/VBox/Content/BackpackPanel/BackpackPane"]
+layout_mode = 2
+text = "Hotbar"
+
+[node name="BarGrid" type="GridContainer" parent="CenterContainer/Panel/Margin/VBox/Content/BackpackPanel/BackpackPane"]
+layout_mode = 2
