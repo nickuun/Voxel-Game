@@ -1,0 +1,29 @@
+[gd_scene load_steps=5 format=3 uid="uid://dhn43hyu603ax"]
+
+[ext_resource type="Script" uid="uid://d241g8k4rkget" path="res://src/enemies/Chicken/chicken.gd" id="1_vqyyg"]
+[ext_resource type="PackedScene" uid="uid://b0a28aqgiuikd" path="res://assets/models/critters/model.gltf" id="2_vy4kq"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_jpa13"]
+size = Vector3(0.6, 0.4, 0.8)
+
+[sub_resource type="BoxMesh" id="BoxMesh_vqyyg"]
+size = Vector3(0.6, 0.4, 0.8)
+
+[node name="Chicken" type="RigidBody3D"]
+mass = 2.0
+contact_monitor = true
+max_contacts_reported = 4
+linear_damp = 0.1
+angular_damp = 0.2
+script = ExtResource("1_vqyyg")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_jpa13")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.195933, 0.49459, -0.103067)
+visible = false
+mesh = SubResource("BoxMesh_vqyyg")
+
+[node name="blockbench_export" parent="." instance=ExtResource("2_vy4kq")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.195566, 0.0121949, 0.512024)
