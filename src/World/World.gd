@@ -88,9 +88,22 @@ func break_notch_at_world(wpos: Vector3) -> int:
 	var notch_item := BlockDB.notch_item_for_base(base_id)
 	return notch_item if notch_item != -1 else base_id
 
+func has_notch_at_world(wpos: Vector3) -> bool:
+	var info := world_to_chunk_local(wpos)
+	var cpos: Vector3i = info["chunk"]
+	var lpos: Vector3i = info["local"]
+	if lpos.y < 0 or lpos.y >= Chunk.CY: return false
+	if not chunks.has(cpos): return false
+	var c: Chunk = chunks[cpos]
 
+	var sub := _world_to_cell_and_sub(wpos)
+	var ix := int(sub["ix"]); var iy := int(sub["iy"]); var iz := int(sub["iz"])
+	var s  := Chunk._sub_index(ix, iy, iz)
 
-func place_notch_at_world(wpos: Vector3, notch_id: int) -> void:
+	var a := c.get_micro_cell(lpos)
+	return a.size() == 8 and int(a[s]) > 0
+
+func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = Vector3.ZERO) -> void:
 	if not BlockDB.is_notch(notch_id): return
 	var base_id := BlockDB.notch_base(notch_id)
 	if base_id < 0: return
@@ -98,24 +111,30 @@ func place_notch_at_world(wpos: Vector3, notch_id: int) -> void:
 	var info := world_to_chunk_local(wpos)
 	var cpos: Vector3i = info["chunk"]
 	var lpos: Vector3i = info["local"]
-
 	if lpos.y < 0 or lpos.y >= Chunk.CY: return
 	if not chunks.has(cpos): return
 	var c: Chunk = chunks[cpos]
 
 	var sub := _world_to_cell_and_sub(wpos)
-	var ix := int(sub["ix"]); var iy := int(sub["iy"]); var iz := int(sub["iz"])
-	var s  := Chunk._sub_index(ix, iy, iz)
+	var ix := int(sub["ix"])
+	var iy := int(sub["iy"])
+	var iz := int(sub["iz"])
 
-	# can't place inside a full block
+	# force the half by the clicked face so it hugs the face
+	if abs(face_normal.x) > 0.5:
+		ix = 0 if face_normal.x > 0.0 else 1
+	if abs(face_normal.y) > 0.5:
+		iy = 0 if face_normal.y > 0.0 else 1
+	if abs(face_normal.z) > 0.5:
+		iz = 0 if face_normal.z > 0.0 else 1
+
+	# only place into empty cells
 	if c.get_block(lpos) != BlockDB.BlockId.AIR:
 		return
 
-	c.set_micro_sub(lpos, s, base_id)
+	c.set_micro_sub(lpos, Chunk._sub_index(ix, iy, iz), base_id)
+	c.dirty = true
 	c.rebuild_mesh()
-
-	# if sub is on a cell edge, neighbor chunk might share a face visually; usually not needed,
-	# but this mirrors your block edit neighbor-refresh if you want to be thorough.
 
 
 func _get_block_from_chunk(c:Chunk, p:Vector3i) -> int:
