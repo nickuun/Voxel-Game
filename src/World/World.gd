@@ -122,14 +122,12 @@ func cell_has_any_notch_at_world(wpos: Vector3) -> bool:
 
 
 func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = Vector3.ZERO) -> void:
-	# 1) Validate notch -> base block id
-	if not BlockDB.is_notch(notch_id):
-		return
+	# Must be a notch item → get its base block id
+	if not BlockDB.is_notch(notch_id): return
 	var base_id := BlockDB.notch_base(notch_id)
-	if base_id < 0:
-		return
+	if base_id < 0: return
 
-	# 2) Locate chunk/cell
+	# Figure out which chunk/cell this world pos maps to
 	var info := world_to_chunk_local(wpos)
 	var cpos: Vector3i = info["chunk"]
 	var lpos: Vector3i = info["local"]
@@ -139,25 +137,24 @@ func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = V
 		return
 	var c: Chunk = chunks[cpos]
 
-	# 3) Pick the specific sub-cube from the world-space point
+	# Sub-index is chosen by the *world position* (already centered by _place_notch_smart)
 	var sub := _world_to_cell_and_sub(wpos)
 	var ix := int(sub["ix"])
 	var iy := int(sub["iy"])
 	var iz := int(sub["iz"])
 	var s  := Chunk._sub_index(ix, iy, iz)
 
-	# 4) Orient the base block (so logs get X/Y/Z variants)
+	# Orient the base id if applicable (logs etc.) using the clicked face normal
 	if face_normal != Vector3.ZERO and BlockDB.is_orientable(base_id):
 		base_id = BlockDB.orient_block_for_normal(base_id, face_normal)
 
-	# 5) Only place into AIR cells (don’t bury notches inside full blocks)
+	# Only place into empty cells (don’t bury notches inside full blocks)
 	if c.get_block(lpos) != BlockDB.BlockId.AIR:
 		return
 
-	# 6) Write and rebuild
+	# Write and rebuild
 	c.set_micro_sub(lpos, s, base_id)
 	c.rebuild_mesh()
-
 
 func _get_block_from_chunk(c:Chunk, p:Vector3i) -> int:
 	# Local-only read; if out of bounds, pretend it's air (cheap & safe).

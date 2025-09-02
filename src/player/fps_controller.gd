@@ -119,72 +119,77 @@ func _try_place_block() -> void:
 
 # Player.gd (anywhere near the top-level functions)
 
-func _signi(f: float) -> int:
-	return 1 if f > 0.0 else (-1 if f < 0.0 else 0)
 
 func _vec_sign(n: Vector3) -> Vector3i:
 	return Vector3i(_signi(n.x), _signi(n.y), _signi(n.z))
 
+func _signi(f: float) -> int:
+	return 1 if f > 0.0 else (-1 if f < 0.0 else 0)
+	
 func _place_notch_smart(hit: Dictionary, notch_id: int) -> void:
 	var p: Vector3 = hit.position
 	var n: Vector3 = hit.normal
 	var eps := 0.001
 
-	# Are we clicking a notch face? Peek just behind the face plane.
 	var clicked_notch := world.has_notch_at_world(p - n * 0.05)
 
-	# Choose the cell on the *solid* side of the face first.
 	var solid_cell := Vector3i(
 		floori((p - n * eps).x),
 		floori((p - n * eps).y),
 		floori((p - n * eps).z)
 	)
 
-	# Destination cell:
-	#  - if we clicked a notch → stay in the same cell
-	#  - else (full block)     → neighbor cell along the face normal
 	var dest_cell := solid_cell + (Vector3i.ZERO if clicked_notch else _vec_sign(n))
 
-	# Local 0..1 coords in that destination cell
 	var local := p - Vector3(dest_cell)
 	var ix := int(floor(clamp(local.x, 0.0, 0.999) * 2.0))
 	var iy := int(floor(clamp(local.y, 0.0, 0.999) * 2.0))
 	var iz := int(floor(clamp(local.z, 0.0, 0.999) * 2.0))
 
-	# Snap the half that touches the clicked face.
 	if abs(n.x) > 0.5:
-		# notch: stick to +X→right(1) / -X→left(0) inside same cell
-		# block: stick to +X→left(0)  / -X→right(1) in the neighbor cell
 		ix = (1 if n.x > 0.0 else 0) if clicked_notch else (0 if n.x > 0.0 else 1)
 	elif abs(n.y) > 0.5:
 		iy = (1 if n.y > 0.0 else 0) if clicked_notch else (0 if n.y > 0.0 else 1)
 	else:
 		iz = (1 if n.z > 0.0 else 0) if clicked_notch else (0 if n.z > 0.0 else 1)
 
-	# Center of that sub-cube
 	var wpos := Vector3(
 		dest_cell.x + (ix * 0.5 + 0.25),
 		dest_cell.y + (iy * 0.5 + 0.25),
 		dest_cell.z + (iz * 0.5 + 0.25)
 	)
 
-	# If it’s already filled, optionally try the neighbor cell (nice QOL when chaining).
+	# Normal to use for orienting logs.
+	var eff_n := n
+
 	if world.has_notch_at_world(wpos):
 		var nb := dest_cell + _vec_sign(n)
+
 		var ix2 := (0 if abs(n.x) > 0.5 and n.x > 0.0 else 1) if abs(n.x) > 0.5 else ix
 		var iy2 := (0 if abs(n.y) > 0.5 and n.y > 0.0 else 1) if abs(n.y) > 0.5 else iy
 		var iz2 := (0 if abs(n.z) > 0.5 and n.z > 0.0 else 1) if abs(n.z) > 0.5 else iz
+
 		var wpos2 := Vector3(
 			nb.x + (ix2 * 0.5 + 0.25),
 			nb.y + (iy2 * 0.5 + 0.25),
 			nb.z + (iz2 * 0.5 + 0.25)
 		)
+
+		# If we clicked a top/bottom face, try to orient sideways based on which in-plane
+		# half was closer (so horizontal log notches feel right when you’re “bridging”).
+		if abs(n.y) > 0.5:
+			var dx := local.x - 0.5
+			var dz := local.z - 0.5
+			eff_n = Vector3(_signi(dx), 0, 0) if abs(dx) >= abs(dz) else Vector3(0, 0, _signi(dz))
+		else:
+			eff_n = n
+
 		if not world.has_notch_at_world(wpos2):
-			world.place_notch_at_world(wpos2, notch_id)
+			world.place_notch_at_world(wpos2, notch_id, eff_n)   # ← pass normal here
 			return
 		return
 
-	world.place_notch_at_world(wpos, notch_id, n)
+	world.place_notch_at_world(wpos, notch_id, eff_n)
 
 
 func _process(_dt):
