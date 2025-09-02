@@ -103,6 +103,24 @@ func has_notch_at_world(wpos: Vector3) -> bool:
 	var a := c.get_micro_cell(lpos)
 	return a.size() == 8 and int(a[s]) > 0
 
+# Returns true if the block cell at wpos contains at least one micro/notch.
+func cell_has_any_notch_at_world(wpos: Vector3) -> bool:
+	var info := world_to_chunk_local(wpos)
+	var cpos: Vector3i = info["chunk"]
+	var lpos: Vector3i = info["local"]
+	if lpos.y < 0 or lpos.y >= Chunk.CY: return false
+	if not chunks.has(cpos): return false
+	var c: Chunk = chunks[cpos]
+
+	var a := c.get_micro_cell(lpos)
+	if a.size() != 8: 
+		return false
+	for v in a:
+		if int(v) > 0:
+			return true
+	return false
+
+
 func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = Vector3.ZERO) -> void:
 	if not BlockDB.is_notch(notch_id): return
 	var base_id := BlockDB.notch_base(notch_id)

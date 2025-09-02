@@ -74,36 +74,41 @@ func _try_place_block() -> void:
 	if hotbar and not hotbar.can_place_selected():
 		return
 
-	var hit: Dictionary = _camera_ray_hit()
-	if hit.is_empty():
+	var hit := _camera_ray_hit()
+	if hit.is_empty(): 
 		return
 
-	var pos: Vector3 = hit.position + hit.normal * 0.5 + hit.normal * EPS
-	if _block_would_intersect_player(pos):
-		return
-
-	var id_to_place: int = current_block_id
+	var id_to_place := current_block_id
 	if BlockDB.is_orientable(id_to_place):
 		id_to_place = BlockDB.orient_block_for_normal(id_to_place, hit.normal)
-	
 
-	# ----- notch placement -----
+	# ----- placing a notch uses the smart placer (unchanged) -----
 	if BlockDB.is_notch(id_to_place):
 		_place_notch_smart(hit, id_to_place)
 		if hotbar: hotbar.consume_selected(1)
 		return
-	
-	var placed: bool = false
+
+	# ----- FULL BLOCK / ENTITY -----
+	# First target cell (standard neighbor along the clicked face)
+	var pos = hit.position + hit.normal * 0.5 + hit.normal * EPS
+
+	# If that target cell already has *any* micros, treat it as solid and step
+	# one more cell outward (prevents z-fighting / overlap).
+	if world.cell_has_any_notch_at_world(pos):
+		pos += hit.normal   # move to the next cell along the same face
+
+	# Do not place into an occupied cell (either a full block or micros)
+	if world.get_block_id_at_world(pos) != BlockDB.BlockId.AIR:
+		return
+	if world.cell_has_any_notch_at_world(pos):
+		return
+	if _block_would_intersect_player(pos):
+		return
+
+	var placed := false
 	if BlockDB.is_entity(id_to_place):
-		# Provide extra context so the entity can face correctly.
-		var cam_forward: Vector3 = -cam.global_transform.basis.z
-		world.place_entity_at_world_oriented(
-			pos,
-			id_to_place,
-			hit.normal,
-			global_position,
-			cam_forward
-		)
+		var cam_forward := -cam.global_transform.basis.z
+		world.place_entity_at_world_oriented(pos, id_to_place, hit.normal, global_position, cam_forward)
 		placed = true
 	else:
 		world.edit_block_at_world(pos, id_to_place)
