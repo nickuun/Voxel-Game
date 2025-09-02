@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3 uid="uid://4uib1b3po1x5"]
+[gd_scene load_steps=13 format=3 uid="uid://4uib1b3po1x5"]
 
 [ext_resource type="Script" uid="uid://cah10o7w7kcc1" path="res://main.gd" id="1_7mycd"]
 [ext_resource type="PackedScene" uid="uid://cp3iojl7e0c7o" path="res://src/player/FPSController.tscn" id="1_ig7tw"]
@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" uid="uid://2xw6pytakgbk" path="res://src/player/SelectionBox/selection_box.tscn" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://dvsarnk5hnyuf" path="res://src/UI/hotbar.gd" id="4_1bvp3"]
 [ext_resource type="PackedScene" uid="uid://dhn43hyu603ax" path="res://src/enemies/Chicken/chicken.tscn" id="5_lquwl"]
+[ext_resource type="Shader" uid="uid://duyfqqkcm5g0m" path="res://src/shaders/ColourInvert.gdshader" id="6_5vw27"]
 [ext_resource type="PackedScene" uid="uid://o1exmhovughr" path="res://src/UI/inventory.tscn" id="7_272bh"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_0xm2m"]
@@ -16,6 +17,9 @@ sky_material = SubResource("ProceduralSkyMaterial_0xm2m")
 [sub_resource type="Environment" id="Environment_0xm2m"]
 background_mode = 2
 sky = SubResource("Sky_h2yge")
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_kek77"]
+shader = ExtResource("6_5vw27")
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_7mycd")
@@ -39,22 +43,8 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.917569, 49.3139, 2.13072)
 
 [node name="UI" type="CanvasLayer" parent="."]
 
-[node name="Crosshair" type="Label" parent="UI"]
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -5.0
-offset_top = -11.5
-offset_right = 5.0
-offset_bottom = 11.5
-grow_horizontal = 2
-grow_vertical = 2
-size_flags_horizontal = 4
-text = "+"
-
 [node name="Hotbar" type="Control" parent="UI"]
+texture_filter = 1
 layout_mode = 3
 anchors_preset = 0
 offset_right = 40.0
@@ -62,3 +52,21 @@ offset_bottom = 40.0
 script = ExtResource("4_1bvp3")
 
 [node name="Inventory" parent="UI" instance=ExtResource("7_272bh")]
+
+[node name="Crosshair" type="Label" parent="UI"]
+texture_filter = 1
+material = SubResource("ShaderMaterial_kek77")
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -9.0
+offset_top = -23.0
+offset_right = 13.0
+offset_bottom = 31.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 4
+theme_override_font_sizes/font_size = 31
+text = "+"
