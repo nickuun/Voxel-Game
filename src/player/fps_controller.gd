@@ -184,7 +184,7 @@ func _place_notch_smart(hit: Dictionary, notch_id: int) -> void:
 			return
 		return
 
-	world.place_notch_at_world(wpos, notch_id)
+	world.place_notch_at_world(wpos, notch_id, n)
 
 
 func _process(_dt):

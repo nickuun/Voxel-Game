@@ -122,36 +122,40 @@ func cell_has_any_notch_at_world(wpos: Vector3) -> bool:
 
 
 func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = Vector3.ZERO) -> void:
-	if not BlockDB.is_notch(notch_id): return
+	# 1) Validate notch -> base block id
+	if not BlockDB.is_notch(notch_id):
+		return
 	var base_id := BlockDB.notch_base(notch_id)
-	if base_id < 0: return
+	if base_id < 0:
+		return
 
+	# 2) Locate chunk/cell
 	var info := world_to_chunk_local(wpos)
 	var cpos: Vector3i = info["chunk"]
 	var lpos: Vector3i = info["local"]
-	if lpos.y < 0 or lpos.y >= Chunk.CY: return
-	if not chunks.has(cpos): return
+	if lpos.y < 0 or lpos.y >= Chunk.CY:
+		return
+	if not chunks.has(cpos):
+		return
 	var c: Chunk = chunks[cpos]
 
+	# 3) Pick the specific sub-cube from the world-space point
 	var sub := _world_to_cell_and_sub(wpos)
 	var ix := int(sub["ix"])
 	var iy := int(sub["iy"])
 	var iz := int(sub["iz"])
+	var s  := Chunk._sub_index(ix, iy, iz)
 
-	# force the half by the clicked face so it hugs the face
-	if abs(face_normal.x) > 0.5:
-		ix = 0 if face_normal.x > 0.0 else 1
-	if abs(face_normal.y) > 0.5:
-		iy = 0 if face_normal.y > 0.0 else 1
-	if abs(face_normal.z) > 0.5:
-		iz = 0 if face_normal.z > 0.0 else 1
+	# 4) Orient the base block (so logs get X/Y/Z variants)
+	if face_normal != Vector3.ZERO and BlockDB.is_orientable(base_id):
+		base_id = BlockDB.orient_block_for_normal(base_id, face_normal)
 
-	# only place into empty cells
+	# 5) Only place into AIR cells (don’t bury notches inside full blocks)
 	if c.get_block(lpos) != BlockDB.BlockId.AIR:
 		return
 
-	c.set_micro_sub(lpos, Chunk._sub_index(ix, iy, iz), base_id)
-	c.dirty = true
+	# 6) Write and rebuild
+	c.set_micro_sub(lpos, s, base_id)
 	c.rebuild_mesh()
 
 
