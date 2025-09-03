@@ -26,6 +26,14 @@ var chunks := {}                              # Dictionary<Vector3i, Chunk]
 var _tick_accum := 0.0
 var _tick_phase := 0
 
+const COLLISION_RADIUS: int = 2						# chunks near player that get colliders
+const TICK_CHUNK_RADIUS: int = 3					# chunks near player that tick simulation
+const SPAWN_BUDGET_PER_FRAME: int = 2				# spawn at most N new chunk nodes / frame
+const GEN_BUDGET_PER_FRAME: int = 2					# generate block data for at most N chunks / frame
+# BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
+const CHUNK_POOL_SIZE: int = 64						# simple pool upper bound
+
+
 # ---- Noises (deterministic) ----
 var height_noise := FastNoiseLite.new()       # terrain height
 var tree_noise   := FastNoiseLite.new()       # tree presence/height
@@ -40,6 +48,10 @@ var _player: Node3D
 # [QUEUES]
 var _rebuild_queue: Array = []   # Array<Chunk>
 
+var _spawn_queue: Array[Vector3i] = []				# positions to spawn
+var _gen_queue: Array[Chunk] = []					# chunks needing block generation
+
+var _chunk_pool: Array[Chunk] = []					# recycled chunks
 
 
 # =========================================================
@@ -101,8 +113,9 @@ func _process(dt: float) -> void:
 		_tick_phase += 1
 
 	_update_chunks_around_player()
+	_drain_spawn_queue(SPAWN_BUDGET_PER_FRAME)
+	_drain_gen_queue(GEN_BUDGET_PER_FRAME)
 	_drain_rebuild_queue(BUILD_BUDGET_PER_FRAME)
-
 
 # =========================================================
 # Streaming chunks around player
@@ -112,50 +125,149 @@ func _player_chunk() -> Vector3i:
 	return Vector3i(floori(p.x / CX), 0, floori(p.z / CZ))
 
 func _update_chunks_around_player(force_full: bool=false) -> void:
-	var center := _player_chunk()
-	var wanted := {}
+	var center: Vector3i = _player_chunk()
+	var wanted: Dictionary = {}
 
-	# Use PRELOAD_RADIUS to spawn a warm ring beyond what we render
+	# Collect desired set (render + one warm ring)
 	for dz in range(-PRELOAD_RADIUS, PRELOAD_RADIUS + 1):
 		for dx in range(-PRELOAD_RADIUS, PRELOAD_RADIUS + 1):
-			var cpos := Vector3i(center.x + dx, 0, center.z + dz)
+			var cpos: Vector3i = Vector3i(center.x + dx, 0, center.z + dz)
 			wanted[cpos] = true
 			if not chunks.has(cpos):
-				spawn_chunk(cpos)
-				var ch: Chunk = chunks[cpos]
-				# Gen is fairly cheap; do it now, but queue the heavy mesh build:
-				generate_chunk_blocks(ch)
-				_seed_micro_slopes_terrain(ch)
-				# _seed_micro_slopes_leaves(ch) # optional
-				_queue_rebuild(ch)             # ← instead of ch.rebuild_mesh()
+				# Queue spawn; heavy work will be budgeted later
+				if not _spawn_queue.has(cpos):
+					_spawn_queue.append(cpos)
 
-	# Despawn those too far (anything not in wanted)
+	# Despawn those too far
 	var to_remove: Array[Vector3i] = []
-	for cpos in chunks.keys():
-		if not wanted.has(cpos):
-			to_remove.append(cpos)
-	for cpos in to_remove:
-		despawn_chunk(cpos)
+	for cpos_key in chunks.keys():
+		var cpos_rm: Vector3i = cpos_key
+		if not wanted.has(cpos_rm):
+			to_remove.append(cpos_rm)
+	for cpos_rm in to_remove:
+		despawn_chunk(cpos_rm)
 
+	# Maintain collision ring every update
+	_set_collision_rings(center)
+
+	# On warm start, prime rebuilds but via budgeted queues
 	if force_full:
-		# Even on warm start, still budgeted; just fill the queue once:
-		for cpos in chunks.keys():
-			_queue_rebuild(chunks[cpos])
+		for cpos_key in chunks.keys():
+			var ch_full: Chunk = chunks[cpos_key]
+			_queue_rebuild(ch_full)
+
+func _set_collision_rings(center: Vector3i) -> void:
+	for c in chunks.values():
+		var dx: int = abs(c.chunk_pos.x - center.x)
+		var dz: int = abs(c.chunk_pos.z - center.z)
+		var near: bool = dx <= COLLISION_RADIUS and dz <= COLLISION_RADIUS
+		c.wants_collision = near
+
+
+func _drain_spawn_queue(max_count: int) -> void:
+	if _spawn_queue.size() == 0:
+		return
+	# Nearest-first
+	var p: Vector3 = _player.global_position
+	_spawn_queue.sort_custom(func(a, b):
+		var ap: Vector3 = Vector3(a.x * CX, 0.0, a.z * CZ)
+		var bp: Vector3 = Vector3(b.x * CX, 0.0, b.z * CZ)
+		return ap.distance_squared_to(p) < bp.distance_squared_to(p)
+	)
+	var n: int = min(max_count, _spawn_queue.size())
+	for i in n:
+		var cpos: Vector3i = _spawn_queue.pop_front()
+		if chunks.has(cpos):
+			continue
+		# Spawn node only (cheap)
+		var c: Chunk = _obtain_chunk()
+		c.position = Vector3(cpos.x * CX, 0.0, cpos.z * CZ)
+		c.reuse_setup(cpos, atlas)
+		chunks[cpos] = c
+		# Generation will be budgeted separately
+		_gen_queue.append(c)
+
+func _drain_gen_queue(max_count: int) -> void:
+	if _gen_queue.size() == 0:
+		return
+	# Nearest-first
+	var p: Vector3 = _player.global_position
+	_gen_queue.sort_custom(func(a, b):
+		var ap: Vector3 = a.position
+		var bp: Vector3 = b.position
+		return ap.distance_squared_to(p) < bp.distance_squared_to(p)
+	)
+	var n: int = min(max_count, _gen_queue.size())
+	for i in n:
+		var c: Chunk = _gen_queue.pop_front()
+		if c == null:
+			continue
+		if not is_instance_valid(c):
+			continue
+		if c.pending_kill:
+			continue
+		# Do deterministic gen now; heavy mesh build will be queued
+		generate_chunk_blocks(c)
+		_seed_micro_slopes_terrain(c)
+		# _seed_micro_slopes_leaves(c) # optional
+		_queue_rebuild(c)
 
 func spawn_chunk(cpos: Vector3i) -> void:
-	if chunks.has(cpos): return
-	var c := Chunk.new()
-	add_child(c)
-	c.position = Vector3(cpos.x * CX, 0, cpos.z * CZ)
-	c.setup(cpos, atlas)
-	chunks[cpos] = c
+	# Kept for compatibility if you still call it anywhere
+	if chunks.has(cpos):
+		return
+	if not _spawn_queue.has(cpos):
+		_spawn_queue.append(cpos)
 
 func despawn_chunk(cpos: Vector3i) -> void:
-	if not chunks.has(cpos): return
+	if not chunks.has(cpos):
+		return
 	var c: Chunk = chunks[cpos]
 	chunks.erase(cpos)
-	if is_instance_valid(c):
+
+	if c != null and is_instance_valid(c):
+		c.pending_kill = true
+		_remove_from_queues_by_chunk(c)
+		_return_chunk_to_pool(c)
+
+func _obtain_chunk() -> Chunk:
+	var c: Chunk
+	if _chunk_pool.size() > 0:
+		c = _chunk_pool.pop_back()
+		if c != null and is_instance_valid(c):
+			c.pending_kill = false
+			c.set_active(true)
+			return c
+	c = Chunk.new()
+	add_child(c)
+	return c
+
+func _return_chunk_to_pool(c: Chunk) -> void:
+	if c == null:
+		return
+	if not is_instance_valid(c):
+		return
+	c.prepare_for_pool()
+	c.set_active(false)
+	if _chunk_pool.size() < CHUNK_POOL_SIZE:
+		_chunk_pool.append(c)
+	else:
 		c.queue_free()
+
+func _remove_from_queues_by_chunk(c: Chunk) -> void:
+	# Remove any references to a chunk that is being despawned
+	var new_rebuild: Array = []
+	for i in _rebuild_queue.size():
+		var r: Chunk = _rebuild_queue[i]
+		if r != c:
+			new_rebuild.append(r)
+	_rebuild_queue = new_rebuild
+
+	var new_gen: Array[Chunk] = []
+	for g in _gen_queue:
+		if g != c:
+			new_gen.append(g)
+	_gen_queue = new_gen
 
 
 # =========================================================
@@ -168,18 +280,24 @@ func _queue_rebuild(c: Chunk) -> void:
 		_rebuild_queue.append(c)
 
 func _drain_rebuild_queue(max_count: int) -> void:
-	if _rebuild_queue.size() == 0: return
-	# [PRIORITY SORT]: nearest to player goes first
-	var p := _player.global_position
+	if _rebuild_queue.size() == 0:
+		return
+	var p: Vector3 = _player.global_position
 	_rebuild_queue.sort_custom(func(a, b):
-		var ap = a.position
-		var bp = b.position
+		var ap: Vector3 = a.position
+		var bp: Vector3 = b.position
 		return ap.distance_squared_to(p) < bp.distance_squared_to(p)
 	)
-	var n = min(max_count, _rebuild_queue.size())
+	var n: int = min(max_count, _rebuild_queue.size())
 	for i in n:
 		var c: Chunk = _rebuild_queue.pop_front()
-		if c != null and is_instance_valid(c) and c.dirty:
+		if c == null:
+			continue
+		if not is_instance_valid(c):
+			continue
+		if c.pending_kill:
+			continue
+		if c.dirty:
 			c.rebuild_mesh()
 
 static func _n01(x: float) -> float:
@@ -226,7 +344,7 @@ func get_block_id_at_world(wpos: Vector3) -> int:
 	return chunk.get_block(lpos)
 
 func edit_block_at_world(wpos: Vector3, id: int) -> void:
-	var info := world_to_chunk_local(wpos)
+	var info: Dictionary = world_to_chunk_local(wpos)
 	var cpos: Vector3i = info["chunk"]
 	var lpos: Vector3i = info["local"]
 
@@ -236,14 +354,24 @@ func edit_block_at_world(wpos: Vector3, id: int) -> void:
 		return
 
 	var chunk: Chunk = chunks[cpos]
+	if chunk == null:
+		return
+	if not is_instance_valid(chunk):
+		return
+	if chunk.pending_kill:
+		return
+
 	if not Chunk.index_in_bounds(lpos.x, lpos.y, lpos.z):
 		return
 
 	chunk.set_block(lpos, id)
 	_on_block_changed_immediate(chunk, lpos, id)
-	chunk.rebuild_mesh()
+	chunk.mark_section_dirty_for_local_y(lpos.y)
+	chunk.update_heightmap_column(lpos.x, lpos.z)
 
-	# Rebuild neighbors at borders
+	_queue_rebuild(chunk)
+
+	# Rebuild neighbors at borders (budgeted)
 	var touched_neighbors: Array[Vector3i] = []
 	if lpos.x == 0: touched_neighbors.append(Vector3i(cpos.x - 1, 0, cpos.z))
 	if lpos.x == Chunk.CX - 1: touched_neighbors.append(Vector3i(cpos.x + 1, 0, cpos.z))
@@ -251,7 +379,9 @@ func edit_block_at_world(wpos: Vector3, id: int) -> void:
 	if lpos.z == Chunk.CZ - 1: touched_neighbors.append(Vector3i(cpos.x, 0, cpos.z + 1))
 	for npos in touched_neighbors:
 		if chunks.has(npos):
-			chunks[npos].rebuild_mesh()
+			var n: Chunk = chunks[npos]
+			if n != null and is_instance_valid(n) and not n.pending_kill:
+				_queue_rebuild(n)
 
 # Treat leaves as “let light through” so grass survives under trees
 func _opaque_for_light(id:int) -> bool:
@@ -290,8 +420,7 @@ func generate_chunk_blocks(c: Chunk) -> void:
 			var wx: int = base_x + x
 			var wz: int = base_z + z
 
-			# Height
-			var h_f := remap(height_noise.get_noise_2d(wx, wz), -1.0, 1.0, 20.0, 40.0)
+			var h_f: float = remap(height_noise.get_noise_2d(wx, wz), -1.0, 1.0, 20.0, 40.0)
 			var h: int = clamp(int(round(h_f)), 1, Chunk.CY - 2)
 
 			for y in range(0, h):
@@ -302,12 +431,16 @@ func generate_chunk_blocks(c: Chunk) -> void:
 					id = BlockDB.BlockId.STONE
 				c.set_block(Vector3i(x, y, z), id)
 
-			# Trees (thresholded)
-			var place_val := _n2d01(tree_noise, wx, wz)
+			# Trees...
+			var place_val: float = _n2d01(tree_noise, wx, wz)
 			if place_val > 0.80:
-				var hval := _n2d01(tree_noise, wx + 12345, wz - 54321)
-				var t_height := 4 + int(round(hval * 2.0))  # 4..6
+				var hval: float = _n2d01(tree_noise, wx + 12345, wz - 54321)
+				var t_height: int = 4 + int(round(hval * 2.0))
 				_place_tree_deterministic(c, Vector3i(x, h, z), t_height, wx, wz)
+
+			# Update cached top solid per (x,z)
+			#c.heightmap_set_top(x, z, h - 1)
+
 
 
 func _place_tree(c:Chunk, at:Vector3i) -> void:
@@ -448,23 +581,27 @@ func _seed_micro_slopes_leaves(c:Chunk) -> void:
 # “Ticks” — now noise-driven (deterministic)
 # =========================================================
 func _world_tick() -> void:
+	var center: Vector3i = _player_chunk()
 	for c in chunks.values():
-		var base_x = c.chunk_pos.x * CX
-		var base_z = c.chunk_pos.z * CZ
+		# Skip far chunks entirely (no sim)
+		var dx: int = abs(c.chunk_pos.x - center.x)
+		var dz: int = abs(c.chunk_pos.z - center.z)
+		if dx > TICK_CHUNK_RADIUS or dz > TICK_CHUNK_RADIUS:
+			continue
 
-		# Sample N random-looking cells per chunk via cheap striding
-		# (keeps it light; feel free to increase)
-		var samples := 20
+		var base_x: int = c.chunk_pos.x * CX
+		var base_z: int = c.chunk_pos.z * CZ
+		var samples: int = 20
+
 		for i in samples:
-			# pseudo-random local coords but deterministic: stride by phase
-			var x := int((i * 7 + _tick_phase * 13) % Chunk.CX)
-			var y := int((i * 11 + _tick_phase * 5) % Chunk.CY)
-			var z := int((i * 3 + _tick_phase * 17) % Chunk.CZ)
-			var p := Vector3i(x, y, z)
-			var id = c.get_block(p)
+			var x: int = int((i * 7 + _tick_phase * 13) % Chunk.CX)
+			var y: int = int((i * 11 + _tick_phase * 5) % Chunk.CY)
+			var z: int = int((i * 3 + _tick_phase * 17) % Chunk.CZ)
+			var p: Vector3i = Vector3i(x, y, z)
+			var id: int = c.get_block(p)
 
-			var wx = base_x + p.x
-			var wz = base_z + p.z
+			var wx: int = base_x + p.x
+			var wz: int = base_z + p.z
 
 			# Grass spread (~20%)
 			if id == BlockDB.BlockId.DIRT:
