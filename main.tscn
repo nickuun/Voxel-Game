@@ -66,6 +66,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.917569, 49.3139, 2.13072)
 [node name="SelectionBox" parent="." instance=ExtResource("3_h2yge")]
 
 [node name="World" parent="." instance=ExtResource("2_0xm2m")]
+player_path = NodePath("../FpsController")
 
 [node name="UI" type="CanvasLayer" parent="."]
 

@@ -207,10 +207,22 @@ static var BLOCKS := {
 	BlockId.DIRT:   {"name":"Dirt", "opaque":true,  "tex_all":21},
 	BlockId.STONE:  {"name":"Stone","opaque":true,  "tex_all":1},
 	BlockId.WOOD:   {"name":"Wood Planks","opaque":true, "tex_all":6},
-	BlockId.LEAVES: {"name":"Leaves","opaque":true, "tex_all":3},
+	BlockId.LEAVES: {
+		"name":"Leaves",
+		"opaque": false,                   # was true → this was forcing cull
+		"transparent": true,
+		"tex_all": 83,
+		"cull_same_transparent": false,     # <— NEW: keep faces between touching leaves
+		"two_sided": true
+	},
 	BlockId.SAND:   {"name":"Sand", "opaque":true,  "tex_all":2},
-	#BlockId.GLASS:               {"name":"Glass",              "opaque":true, "tex_all":28},
-	BlockId.GLASS: {"name":"Glass", "opaque":false, "transparent":true, "tex_all":28},
+	BlockId.GLASS: {
+		"name":"Glass",
+		"opaque": false,
+		"transparent": true,
+		"tex_all": 28,
+		"cull_same_transparent": true
+	},
 	BlockId.COBBLE:              {"name":"Cobblestone",        "opaque":true,  "tex_all":7},
 	BlockId.MOSSY_COBBLE:        {"name":"Mossy Cobblestone",  "opaque":true,  "tex_all":10},
 	BlockId.STONE_BRICKS:        {"name":"Stone Bricks",       "opaque":true,  "tex_all":8},
@@ -298,13 +310,22 @@ static func is_transparent(id:int) -> bool:
 
 # if neighbor should hide this face
 static func face_hidden_by_neighbor(this_id:int, neighbor_id:int) -> bool:
-	# Opaque neighbor hides face.
+	# air never hides
+	if neighbor_id == BlockId.AIR:
+		return false
+
+	# any opaque neighbor hides the face
 	if is_opaque(neighbor_id):
 		return true
-	# Faces BETWEEN identical transparent blocks (e.g., glass ↔ glass) are hidden too.
+
+	# identical transparent blocks: only hide if this block *wants* that behavior
 	if this_id == neighbor_id and is_transparent(this_id):
-		return true
+		var cull_same = BLOCKS.get(this_id, {}).get("cull_same_transparent", true)
+		return cull_same
+
+	# different transparent neighbors: keep the face (nice for leaf/glass combos)
 	return false
+
 
 static func is_orientable(id:int) -> bool:
 	return BLOCKS.get(id, {}).has("orient_variants")

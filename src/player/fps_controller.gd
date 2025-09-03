@@ -47,6 +47,9 @@ const SHOOT_IMPULSE := 14.0
 const PUSH_IMPULSE := 2.0      # base shove
 const PUSH_VEL_FACTOR := 0.25   # extra shove based on your current velocity
 
+const NOTCH_HALF := 0.25  # sub-voxel is a 0.5m cube
+
+
 func _apply_push_to_bodies() -> void:
 	for i in range(get_slide_collision_count()):
 		var col := get_slide_collision(i)
@@ -117,7 +120,17 @@ func _try_place_block() -> void:
 	if placed and hotbar:
 		hotbar.consume_selected(1)
 
-# Player.gd (anywhere near the top-level functions)
+
+func _notch_would_intersect_player(center: Vector3) -> bool:
+	# Treat the player as a vertical cylinder (same idea as your block check).
+	var px := global_position.x
+	var pz := global_position.z
+	var py := global_position.y
+	var half_h := PLAYER_HEIGHT * 0.5
+
+	var horizontal := Vector2(center.x - px, center.z - pz).length()
+	var vertical_overlap := (center.y + NOTCH_HALF) > (py - half_h) and (center.y - NOTCH_HALF) < (py + half_h)
+	return horizontal < (PLAYER_RADIUS + NOTCH_HALF) and vertical_overlap
 
 
 func _vec_sign(n: Vector3) -> Vector3i:
@@ -131,21 +144,28 @@ func _place_notch_smart(hit: Dictionary, notch_id: int) -> void:
 	var n: Vector3 = hit.normal
 	var eps := 0.001
 
+	# Did we click a notch face? (peek just behind the face)
 	var clicked_notch := world.has_notch_at_world(p - n * 0.05)
 
+	# Pick the solid-side cell first
 	var solid_cell := Vector3i(
 		floori((p - n * eps).x),
 		floori((p - n * eps).y),
 		floori((p - n * eps).z)
 	)
 
+	# Destination cell:
+	#  - clicking a notch  -> stay in same cell
+	#  - clicking a block  -> neighbor along face normal
 	var dest_cell := solid_cell + (Vector3i.ZERO if clicked_notch else _vec_sign(n))
 
+	# Local 0..1 in that cell
 	var local := p - Vector3(dest_cell)
 	var ix := int(floor(clamp(local.x, 0.0, 0.999) * 2.0))
 	var iy := int(floor(clamp(local.y, 0.0, 0.999) * 2.0))
 	var iz := int(floor(clamp(local.z, 0.0, 0.999) * 2.0))
 
+	# Snap the half touching the clicked face
 	if abs(n.x) > 0.5:
 		ix = (1 if n.x > 0.0 else 0) if clicked_notch else (0 if n.x > 0.0 else 1)
 	elif abs(n.y) > 0.5:
@@ -153,15 +173,21 @@ func _place_notch_smart(hit: Dictionary, notch_id: int) -> void:
 	else:
 		iz = (1 if n.z > 0.0 else 0) if clicked_notch else (0 if n.z > 0.0 else 1)
 
+	# Center of the sub-cube we want
 	var wpos := Vector3(
 		dest_cell.x + (ix * 0.5 + 0.25),
 		dest_cell.y + (iy * 0.5 + 0.25),
 		dest_cell.z + (iz * 0.5 + 0.25)
 	)
 
-	# Normal to use for orienting logs.
+	# ⛔ don’t place if it would intersect the player
+	if _notch_would_intersect_player(wpos):
+		return
+
+	# Normal used for orientable notch types (e.g., log bark direction)
 	var eff_n := n
 
+	# If already filled, try chaining into the neighbor cell
 	if world.has_notch_at_world(wpos):
 		var nb := dest_cell + _vec_sign(n)
 
@@ -175,8 +201,7 @@ func _place_notch_smart(hit: Dictionary, notch_id: int) -> void:
 			nb.z + (iz2 * 0.5 + 0.25)
 		)
 
-		# If we clicked a top/bottom face, try to orient sideways based on which in-plane
-		# half was closer (so horizontal log notches feel right when you’re “bridging”).
+		# Bridging across a top/bottom face? Pick sideways normal by in-plane half.
 		if abs(n.y) > 0.5:
 			var dx := local.x - 0.5
 			var dz := local.z - 0.5
@@ -184,11 +209,11 @@ func _place_notch_smart(hit: Dictionary, notch_id: int) -> void:
 		else:
 			eff_n = n
 
-		if not world.has_notch_at_world(wpos2):
-			world.place_notch_at_world(wpos2, notch_id, eff_n)   # ← pass normal here
-			return
+		if not world.has_notch_at_world(wpos2) and not _notch_would_intersect_player(wpos2):
+			world.place_notch_at_world(wpos2, notch_id, eff_n)
 		return
 
+	# First spot was free & safe
 	world.place_notch_at_world(wpos, notch_id, eff_n)
 
 
