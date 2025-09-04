@@ -46,6 +46,12 @@ const MESH_CACHE_LIMIT := 256
 var _mesh_cache := {}                 # Dictionary<Vector3i, Dictionary]
 var _mesh_lru: Array[Vector3i] = []
 
+# ---- Meshing workers ----
+var _mesh_tasks := {}              # cpos -> true (avoid dup)
+var _mesh_results: Array = []      # worker → main
+var _mesh_mutex := Mutex.new()
+const MESH_APPLY_BUDGET_PER_FRAME := 2
+
 # ---- Player reference ----
 @export var player_path: NodePath
 var _player: Node3D
@@ -69,6 +75,17 @@ var _cache_lru: Array[Vector3i] = []              # most-recent-first positions
 var _gen_tasks := {}                               # cpos -> true (to avoid duplicates)
 var _gen_results: Array = []                       # results arriving from workers
 var _gen_mutex := Mutex.new()
+
+# --- Streaming hysteresis ---
+const DESPAWN_RADIUS := PRELOAD_RADIUS + 1    # keep chunks 1 ring beyond preload
+const COLLISION_ON_RADIUS := COLLISION_RADIUS # turn ON at this distance
+const COLLISION_OFF_RADIUS := COLLISION_RADIUS + 1  # turn OFF only when 1 ring farther
+
+# --- Priorities / budgets ---
+const MESH_APPLY_BUDGET_NEAR := 6            # apply more results when near chunks are pending
+const BEAUTIFY_BUDGET_PER_FRAME := 1         # low background polish pass
+
+var _beautify_queue: Array[Chunk] = []
 
 
 # =========================================================
@@ -118,6 +135,42 @@ func _ready() -> void:
 	_update_chunks_around_player(true)
 	BlockDB.register_notch_blocks()
 
+func _drain_beautify_queue(max_count:int) -> void:
+	if _beautify_queue.size() == 0:
+		return
+	var applied := 0
+	# nearest-first inside beautify too
+	_beautify_queue.sort_custom(func(a, b):
+		return a.position.distance_squared_to(_player.global_position) < b.position.distance_squared_to(_player.global_position)
+	)
+	while applied < max_count and _beautify_queue.size() > 0:
+		var c: Chunk = _beautify_queue.pop_front()
+		if c == null or not is_instance_valid(c) or c.pending_kill:
+			continue
+		# Apply beautify on main thread, then rebuild off-thread (old mesh stays visible)
+		_seed_micro_slopes_terrain(c)
+		# _seed_micro_slopes_leaves(c)  # optional
+		# Re-decorate canopies if you like (safe; idempotent-ish)
+		# NOTE: if you want exact same notches as gen-worker found, pass the saved tree list.
+		# For simplicity we'll skip re-decoration here:
+		c.dirty = true
+		_queue_rebuild(c)
+		applied += 1
+
+func _ensure_near_colliders() -> void:
+	var center := _player_chunk()
+	for dz in range(-COLLISION_ON_RADIUS, COLLISION_ON_RADIUS + 1):
+		for dx in range(-COLLISION_ON_RADIUS, COLLISION_ON_RADIUS + 1):
+			var cpos := Vector3i(center.x + dx, 0, center.z + dz)
+			if not chunks.has(cpos): continue
+			var c: Chunk = chunks[cpos]
+			if c == null or not is_instance_valid(c) or c.pending_kill: continue
+			if c.collision_shape.shape == null:
+				var m := c.mesh_instance.mesh
+				if m != null and m.get_surface_count() > 0:
+					# Instant collider if we’re near and mesh exists
+					c._set_collision_after_mesh(m)
+
 
 func _process(dt: float) -> void:
 	if _player == null:
@@ -134,41 +187,384 @@ func _process(dt: float) -> void:
 	_drain_gen_queue(GEN_BUDGET_PER_FRAME)
 	_drain_rebuild_queue(BUILD_BUDGET_PER_FRAME)
 	_drain_gen_results(APPLY_GEN_BUDGET_PER_FRAME)
+	_drain_mesh_results(MESH_APPLY_BUDGET_PER_FRAME)
+	_drain_beautify_queue(BEAUTIFY_BUDGET_PER_FRAME)
+	_ensure_near_colliders()
 
 # =========================================================
 # Streaming chunks around player
 # =========================================================
+func _push_tri(dst: Dictionary, v0: Vector3, v1: Vector3, v2: Vector3, n: Vector3, uv0: Vector2, uv1: Vector2, uv2: Vector2) -> void:
+	dst["v"].append(v0); dst["v"].append(v1); dst["v"].append(v2)
+	dst["n"].append(n);  dst["n"].append(n);  dst["n"].append(n)
+	dst["uv"].append(uv0); dst["uv"].append(uv1); dst["uv"].append(uv2)
+
+func _push_quad(dst: Dictionary, q: Array, n: Vector3, uv0: Vector2, uv1: Vector2, uv2: Vector2, uv3: Vector2) -> void:
+	# q: [v0,v1,v2,v3] in your same winding
+	_push_tri(dst, q[0], q[2], q[1], n, uv0, uv2, uv1)
+	_push_tri(dst, q[0], q[3], q[2], n, uv0, uv3, uv2)
+
+func _drain_mesh_results(max_count:int) -> void:
+	# Pull everything currently available (atomic)
+	var pulled: Array = []
+	_mesh_mutex.lock()
+	if _mesh_results.size() > 0:
+		pulled = _mesh_results.duplicate()
+		_mesh_results.clear()
+	_mesh_mutex.unlock()
+	if pulled.size() == 0:
+		return
+
+	# Sort by distance to player (nearest first)
+	pulled.sort_custom(func(a, b):
+		var da := _dist2_chunk_to_player(a["cpos"])
+		var db := _dist2_chunk_to_player(b["cpos"])
+		return da < db
+	)
+
+	# Boost budget if any result is within the collision ring
+	var budget := max_count
+	for r in pulled:
+		var cpos: Vector3i = r["cpos"]
+		var dx = abs(cpos.x - _player_chunk().x)
+		var dz = abs(cpos.z - _player_chunk().z)
+		if dx <= COLLISION_ON_RADIUS and dz <= COLLISION_ON_RADIUS:
+			budget = MESH_APPLY_BUDGET_NEAR
+			break
+
+	var applied := 0
+	var i := 0
+	while i < pulled.size() and applied < budget:
+		var r = pulled[i]
+		var cpos: Vector3i = r["cpos"]
+		_mesh_tasks.erase(cpos)
+
+		if chunks.has(cpos):
+			var c: Chunk = chunks[cpos]
+			if c != null and is_instance_valid(c) and not c.pending_kill:
+				# Build mesh from arrays
+				var mesh := ArrayMesh.new()
+				var mat_opaque: Material = c.material
+				var mat_trans: StandardMaterial3D
+				if c.material is StandardMaterial3D:
+					mat_trans = (c.material as StandardMaterial3D).duplicate()
+				else:
+					mat_trans = StandardMaterial3D.new()
+				mat_trans.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+				var sections: Array = r["sections"]
+				for s in sections.size():
+					var so = sections[s]["opaque"]
+					if so["v"].size() > 0:
+						var arr := []
+						arr.resize(Mesh.ARRAY_MAX)
+						arr[Mesh.ARRAY_VERTEX] = so["v"]
+						arr[Mesh.ARRAY_NORMAL] = so["n"]
+						arr[Mesh.ARRAY_TEX_UV] = so["uv"]
+						var idx := mesh.get_surface_count()
+						mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+						mesh.surface_set_material(idx, mat_opaque)
+
+					var st = sections[s]["trans"]
+					if st["v"].size() > 0:
+						var arr2 := []
+						arr2.resize(Mesh.ARRAY_MAX)
+						arr2[Mesh.ARRAY_VERTEX] = st["v"]
+						arr2[Mesh.ARRAY_NORMAL] = st["n"]
+						arr2[Mesh.ARRAY_TEX_UV] = st["uv"]
+						var idx2 := mesh.get_surface_count()
+						mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr2)
+						mesh.surface_set_material(idx2, mat_trans)
+
+				c.mesh_instance.mesh = mesh
+
+				# Immediate collider if near; defer if far
+				var dx = abs(c.chunk_pos.x - _player_chunk().x)
+				var dz = abs(c.chunk_pos.z - _player_chunk().z)
+				if c.wants_collision and dx <= COLLISION_ON_RADIUS and dz <= COLLISION_ON_RADIUS:
+					c._set_collision_after_mesh(mesh)     # immediate
+				else:
+					c.call_deferred("_set_collision_after_mesh", mesh)
+
+				for s in c.SECTION_COUNT:
+					c.section_dirty[s] = 0
+				c.dirty = false
+
+				_mesh_cache_put(cpos, c.snapshot_mesh_and_data())
+				applied += 1
+
+		i += 1
+
+	# Re-queue ALL leftovers we didn’t apply this frame (nothing gets lost)
+	if i < pulled.size():
+		_mesh_mutex.lock()
+		for j in range(i, pulled.size()):
+			_mesh_results.push_back(pulled[j])
+		_mesh_mutex.unlock()
+
+func _mesh_worker(snap: Dictionary) -> void:
+	var cpos: Vector3i = snap["cpos"]
+	var CX: int = snap["CX"]; var CY: int = snap["CY"]; var CZ: int = snap["CZ"]
+	var SECTION_H: int = snap["section_h"]; var SECTION_COUNT: int = snap["section_count"]
+	var blocks: Array = snap["blocks"]
+	var heightmap: PackedInt32Array = snap["heightmap"]
+	var micro: Dictionary = snap["micro"]
+
+	# Return structure: per section {opaque:{v,n,uv}, trans:{v,n,uv}}
+	var sections: Array = []
+	sections.resize(SECTION_COUNT)
+	for s in SECTION_COUNT:
+		sections[s] = {
+			"opaque": {"v": PackedVector3Array(), "n": PackedVector3Array(), "uv": PackedVector2Array()},
+			"trans":  {"v": PackedVector3Array(), "n": PackedVector3Array(), "uv": PackedVector2Array()}
+		}
+
+	var faces := [
+		Vector3( 1,0,0), Vector3(-1,0,0), Vector3(0,1,0),
+		Vector3( 0,-1,0), Vector3(0,0,1), Vector3(0,0,-1)
+	]
+	var face_vertices := [
+		[Vector3(1,0,0), Vector3(1,1,0), Vector3(1,1,1), Vector3(1,0,1)],
+		[Vector3(0,0,1), Vector3(0,1,1), Vector3(0,1,0), Vector3(0,0,0)],
+		[Vector3(0,1,1), Vector3(1,1,1), Vector3(1,1,0), Vector3(0,1,0)],
+		[Vector3(0,0,0), Vector3(1,0,0), Vector3(1,0,1), Vector3(0,0,1)],
+		[Vector3(0,0,1), Vector3(1,0,1), Vector3(1,1,1), Vector3(0,1,1)],
+		[Vector3(0,1,0), Vector3(1,1,0), Vector3(1,0,0), Vector3(0,0,0)]
+	]
+
+	# ------- BIG BLOCKS -------
+	for s in SECTION_COUNT:
+		var y0 := s * SECTION_H
+		var y1 = min(CY - 1, y0 + SECTION_H - 1)
+		var dst_opaque = sections[s]["opaque"]
+		var dst_trans  = sections[s]["trans"]
+
+		for x in CX:
+			for z in CZ:
+				var top := heightmap[x * CZ + z]
+				if top < y0:
+					continue
+				var y_max = min(top, y1)
+				for y in range(y0, y_max + 1):
+					var id: int = blocks[x][y][z]
+					if id == BlockDB.BlockId.AIR:
+						continue
+
+					for face_i in 6:
+						var nrm: Vector3 = faces[face_i]
+						var nx := x + int(nrm.x); var ny := y + int(nrm.y); var nz := z + int(nrm.z)
+						var neighbor_id := BlockDB.BlockId.AIR
+						if nx >= 0 and nx < CX and ny >= 0 and ny < CY and nz >= 0 and nz < CZ:
+							# local read is safe from snapshot
+							neighbor_id = blocks[nx][ny][nz]
+						if BlockDB.face_hidden_by_neighbor(id, neighbor_id):
+							continue
+
+						var base := Vector3(x, y, z)
+						var quad = face_vertices[face_i]
+						var v0 = base + quad[0]
+						var v1 = base + quad[1]
+						var v2 = base + quad[2]
+						var v3 = base + quad[3]
+
+						var tile := BlockDB.get_face_tile(id, face_i)
+						var uv0 := _chunk_uv_from_local(face_i, quad[0], tile)
+						var uv1 := _chunk_uv_from_local(face_i, quad[1], tile)
+						var uv2 := _chunk_uv_from_local(face_i, quad[2], tile)
+						var uv3 := _chunk_uv_from_local(face_i, quad[3], tile)
+
+						var dst = dst_opaque
+						if BlockDB.is_transparent(id):
+							dst = dst_trans
+						_push_quad(dst, [v0,v1,v2,v3], nrm, uv0, uv1, uv2, uv3)
+
+	# ------- MICRO (notches) -------
+	# Exactly like your rebuild, but append to dst arrays instead of SurfaceTool.
+	for s in SECTION_COUNT:
+		var y0 := s * SECTION_H
+		var y1 = min(CY - 1, y0 + SECTION_H - 1)
+		var dst_opaque = sections[s]["opaque"]
+		var dst_trans  = sections[s]["trans"]
+
+		for cell_lp in micro.keys():
+			var p: Vector3i = cell_lp
+			if p.y < y0 or p.y > y1:
+				continue
+			var a: PackedInt32Array = micro[p]
+			if a.size() != 8:
+				continue
+
+			# Pack by base id → 8-bit mask (same as your code)
+			var masks := {}
+			for sub in 8:
+				var base_id: int = int(a[sub])
+				if base_id <= 0: continue
+				var m := 0
+				if masks.has(base_id): m = int(masks[base_id])
+				m |= (1 << sub)
+				masks[base_id] = m
+
+			for base_id_key in masks.keys():
+				var base_id := int(base_id_key)
+				var mask := int(masks[base_id_key])
+				var added := _emit_micro_faces_arrays(CX,CY,CZ, blocks, p, base_id, mask)
+				# 'added' returns {"opaque":[v,n,uv], "trans":[v,n,uv]}
+				var o = added["opaque"]; var t = added["trans"]
+				# Append into dst_opaque/trans
+				dst_opaque["v"].append_array(o["v"]); dst_opaque["n"].append_array(o["n"]); dst_opaque["uv"].append_array(o["uv"])
+				dst_trans["v"].append_array(t["v"]);   dst_trans["n"].append_array(t["n"]);   dst_trans["uv"].append_array(t["uv"])
+
+	# deliver to main thread
+	var result := {"cpos": cpos, "sections": sections}
+	_mesh_mutex.lock()
+	_mesh_results.append(result)
+	_mesh_mutex.unlock()
+
+
+# --- helpers used by the worker ---
+
+func _dist2_chunk_to_player(cpos: Vector3i) -> float:
+	var p := _player.global_position
+	var cx := float(cpos.x * CX)
+	var cz := float(cpos.z * CZ)
+	return (cx - p.x) * (cx - p.x) + (cz - p.z) * (cz - p.z)
+
+func _chunk_uv_from_local(face_i:int, local:Vector3, tile:int) -> Vector2:
+	# Same math as Chunk._uv_from_local, duplicated here (workers can’t call instance methods).
+	var uvs := BlockDB.tile_uvs(tile)     # [TL, TR, BR, BL]
+	var u0 := uvs[0].x; var v0 := uvs[0].y
+	var u1 := uvs[2].x; var v1 := uvs[2].y
+	var s := 0.0
+	var t := 0.0
+	match face_i:
+		0: s = local.z;           t = 1.0 - local.y
+		1: s = 1.0 - local.z;     t = 1.0 - local.y
+		2: s = local.x;           t = 1.0 - local.z
+		3: s = local.x;           t = local.z
+		4: s = local.x;           t = 1.0 - local.y
+		5: s = 1.0 - local.x;     t = 1.0 - local.y
+	return Vector2(lerpf(u0, u1, s), lerpf(v0, v1, t))
+	
+func _has(m:int,sx:int,sy:int,sz:int)->bool:
+	var idx := (sy << 2) | (sz << 1) | sx
+	return ((m >> idx) & 1) == 1
+
+
+func _emit_micro_faces_arrays(CX:int,CY:int,CZ:int, blocks:Array, cell_lp:Vector3i, base_id:int, mask:int) -> Dictionary:
+	var faces := [
+		Vector3( 1,0,0), Vector3(-1,0,0), Vector3(0,1,0),
+		Vector3( 0,-1,0), Vector3(0,0,1), Vector3(0,0,-1)
+	]
+	var face_vertices := [
+		[Vector3(1,0,0), Vector3(1,1,0), Vector3(1,1,1), Vector3(1,0,1)],
+		[Vector3(0,0,1), Vector3(0,1,1), Vector3(0,1,0), Vector3(0,0,0)],
+		[Vector3(0,1,1), Vector3(1,1,1), Vector3(1,1,0), Vector3(0,1,0)],
+		[Vector3(0,0,0), Vector3(1,0,0), Vector3(1,0,1), Vector3(0,0,1)],
+		[Vector3(0,0,1), Vector3(1,0,1), Vector3(1,1,1), Vector3(0,1,1)],
+		[Vector3(0,1,0), Vector3(1,1,0), Vector3(1,0,0), Vector3(0,0,0)]
+	]
+
+	var out_o := {"v": PackedVector3Array(), "n": PackedVector3Array(), "uv": PackedVector2Array()}
+	var out_t := {"v": PackedVector3Array(), "n": PackedVector3Array(), "uv": PackedVector2Array()}
+
+
+
+	var size := 0.5
+	var cell_origin := Vector3(cell_lp.x, cell_lp.y, cell_lp.z)
+
+	for mz in 2:
+		for my in 2:
+			for mx in 2:
+				if not _has(mask, mx,my,mz): continue
+				var sub_origin := cell_origin + Vector3(mx * size, my * size, mz * size)
+
+				for face_i in 6:
+					var cull := false
+					# A) sibling micro
+					if face_i == 0 and mx + 1 < 2 and _has(mask,mx+1,my,mz): cull = true
+					elif face_i == 1 and mx - 1 >= 0 and _has(mask,mx-1,my,mz): cull = true
+					elif face_i == 2 and my + 1 < 2 and _has(mask,mx,my+1,mz): cull = true
+					elif face_i == 3 and my - 1 >= 0 and _has(mask,mx,my-1,mz): cull = true
+					elif face_i == 4 and mz + 1 < 2 and _has(mask,mx,my,mz+1): cull = true
+					elif face_i == 5 and mz - 1 >= 0 and _has(mask,mx,my,mz-1): cull = true
+
+					# B) neighbor macro cell
+					if not cull:
+						var nx := cell_lp.x
+						var ny := cell_lp.y
+						var nz := cell_lp.z
+						var check := false
+						if face_i == 0 and mx == 1: nx += 1; check = true
+						elif face_i == 1 and mx == 0: nx -= 1; check = true
+						elif face_i == 2 and my == 1: ny += 1; check = true
+						elif face_i == 3 and my == 0: ny -= 1; check = true
+						elif face_i == 4 and mz == 1: nz += 1; check = true
+						elif face_i == 5 and mz == 0: nz -= 1; check = true
+
+						if check and nx>=0 and nx<CX and ny>=0 and ny<CY and nz>=0 and nz<CZ:
+							var neighbor_id = blocks[nx][ny][nz]
+							if BlockDB.face_hidden_by_neighbor(base_id, neighbor_id):
+								cull = true
+
+					if cull: continue
+
+					var quad = face_vertices[face_i]
+					var v0 = sub_origin + quad[0] * size
+					var v1 = sub_origin + quad[1] * size
+					var v2 = sub_origin + quad[2] * size
+					var v3 = sub_origin + quad[3] * size
+					var nrm = faces[face_i]
+					var tile := BlockDB.get_face_tile(base_id, face_i)
+					var uv0 := _chunk_uv_from_local(face_i, quad[0], tile)
+					var uv1 := _chunk_uv_from_local(face_i, quad[1], tile)
+					var uv2 := _chunk_uv_from_local(face_i, quad[2], tile)
+					var uv3 := _chunk_uv_from_local(face_i, quad[3], tile)
+
+					var dst := out_o
+					if BlockDB.is_transparent(base_id):
+						dst = out_t
+					_push_quad(dst, [v0,v1,v2,v3], nrm, uv0, uv1, uv2, uv3)
+
+	return {"opaque": out_o, "trans": out_t}
+
+
 func _player_chunk() -> Vector3i:
 	var p := _player.global_position
 	return Vector3i(floori(p.x / CX), 0, floori(p.z / CZ))
 
 func _update_chunks_around_player(force_full: bool=false) -> void:
 	var center: Vector3i = _player_chunk()
-	var wanted: Dictionary = {}
 
-	# Collect desired set (render + one warm ring)
-	for dz in range(-PRELOAD_RADIUS, PRELOAD_RADIUS + 1):
-		for dx in range(-PRELOAD_RADIUS, PRELOAD_RADIUS + 1):
-			var cpos: Vector3i = Vector3i(center.x + dx, 0, center.z + dz)
-			wanted[cpos] = true
-			if not chunks.has(cpos):
-				# Queue spawn; heavy work will be budgeted later
-				if not _spawn_queue.has(cpos):
-					_spawn_queue.append(cpos)
+	var wanted_spawn: Dictionary = {} # inside PRELOAD_RADIUS → must exist
+	var wanted_keep: Dictionary = {}  # inside DESPAWN_RADIUS → do not despawn yet
 
-	# Despawn those too far
+	for dz in range(-DESPAWN_RADIUS, DESPAWN_RADIUS + 1):
+		for dx in range(-DESPAWN_RADIUS, DESPAWN_RADIUS + 1):
+			var cpos := Vector3i(center.x + dx, 0, center.z + dz)
+			if abs(dx) <= PRELOAD_RADIUS and abs(dz) <= PRELOAD_RADIUS:
+				wanted_spawn[cpos] = true
+			if abs(dx) <= DESPAWN_RADIUS and abs(dz) <= DESPAWN_RADIUS:
+				wanted_keep[cpos] = true
+
+	# Spawn inside preload radius
+	for cpos in wanted_spawn.keys():
+		if not chunks.has(cpos):
+			if not _spawn_queue.has(cpos):
+				_spawn_queue.append(cpos)
+
+	# Despawn only outside DESPAWN_RADIUS
 	var to_remove: Array[Vector3i] = []
 	for cpos_key in chunks.keys():
 		var cpos_rm: Vector3i = cpos_key
-		if not wanted.has(cpos_rm):
+		if not wanted_keep.has(cpos_rm):
 			to_remove.append(cpos_rm)
 	for cpos_rm in to_remove:
 		despawn_chunk(cpos_rm)
 
-	# Maintain collision ring every update
+	# Collision ring with hysteresis
 	_set_collision_rings(center)
 
-	# On warm start, prime rebuilds but via budgeted queues
+	# Optional warm start
 	if force_full:
 		for cpos_key in chunks.keys():
 			var ch_full: Chunk = chunks[cpos_key]
@@ -176,10 +572,30 @@ func _update_chunks_around_player(force_full: bool=false) -> void:
 
 func _set_collision_rings(center: Vector3i) -> void:
 	for c in chunks.values():
-		var dx: int = abs(c.chunk_pos.x - center.x)
-		var dz: int = abs(c.chunk_pos.z - center.z)
-		var near: bool = dx <= COLLISION_RADIUS and dz <= COLLISION_RADIUS
-		c.wants_collision = near
+		var dx = abs(c.chunk_pos.x - center.x)
+		var dz = abs(c.chunk_pos.z - center.z)
+
+		var enter = (dx <= COLLISION_ON_RADIUS and dz <= COLLISION_ON_RADIUS)
+		var exit_far = (dx > COLLISION_OFF_RADIUS or dz > COLLISION_OFF_RADIUS)
+
+		# Turn ON: if we have a mesh but no shape, create the collider NOW.
+		if enter:
+			c.wants_collision = true
+			if c.collision_shape.shape == null:
+				var m = c.mesh_instance.mesh
+				if m != null and m.get_surface_count() > 0:
+					c._set_collision_after_mesh(m)  # immediate; no defer when near
+		else:
+			# Inside the middle band: keep whatever collider we have (hysteresis).
+			pass
+
+		# Turn OFF only when safely far
+		if exit_far:
+			c.wants_collision = false
+			# Optional: free the shape to save memory
+			if c.collision_shape.shape != null:
+				c.collision_shape.shape = null
+
 
 func _drain_spawn_queue(max_count: int) -> void:
 	if _spawn_queue.size() == 0:
@@ -359,7 +775,6 @@ func _drain_gen_results(max_count: int) -> void:
 		var cpos: Vector3i = r["cpos"]
 		_gen_tasks.erase(cpos)
 
-		# If the chunk got despawned meanwhile, store it in cache for later
 		if not chunks.has(cpos):
 			_add_to_cache(cpos, r)
 			continue
@@ -368,24 +783,30 @@ func _drain_gen_results(max_count: int) -> void:
 		if c == null or not is_instance_valid(c) or c.pending_kill:
 			continue
 
-		# Adopt generated data
+		# Adopt raw data
 		c.blocks = r["blocks"]
 		c.heightmap_top_solid = r["heightmap"]
-
-		# Mark sections dirty
 		for s in c.SECTION_COUNT:
 			c.section_dirty[s] = 1
 		c.dirty = true
 
-		# Decorate trees with notches (main thread; uses micro_noise)
-		for t in r["trees"]:
-			_decorate_tree_with_notches(c, t["at"], int(t["height"]))
+		var dx = abs(c.chunk_pos.x - _player_chunk().x)
+		var dz = abs(c.chunk_pos.z - _player_chunk().z)
+		var near = dx <= COLLISION_ON_RADIUS + 1 and dz <= COLLISION_ON_RADIUS + 1
 
-		# Micro smoothing on main thread (cheap-ish)
-		_seed_micro_slopes_terrain(c)
-		# _seed_micro_slopes_leaves(c) # optional if you want
-
-		_queue_rebuild(c)
+		if near:
+			# FAST FIRST: skip beautify; get ground/collider ASAP
+			_start_mesh_task(c)
+			# schedule beautify later
+			if not _beautify_queue.has(c):
+				_beautify_queue.append(c)
+		else:
+			# out of ring: do the full beautify before meshing
+			_seed_micro_slopes_terrain(c)
+			# _seed_micro_slopes_leaves(c)  # optional
+			for t in r["trees"]:
+				_decorate_tree_with_notches(c, t["at"], int(t["height"]))
+			_start_mesh_task(c)
 
 
 func _start_gen_task(c: Chunk) -> void:
@@ -504,6 +925,26 @@ func _queue_rebuild(c: Chunk) -> void:
 	if not _rebuild_queue.has(c):
 		_rebuild_queue.append(c)
 
+func _start_mesh_task(c: Chunk) -> void:
+	var cpos := c.chunk_pos
+	if _mesh_tasks.has(cpos):
+		return
+	_mesh_tasks[cpos] = true
+
+	# Take a snapshot the worker can read (arrays only, no Resources)
+	var snap := c.snapshot_mesh_and_data()
+	# We don’t need existing mesh/shape in worker; remove to keep payload light
+	snap.erase("mesh")
+	snap.erase("shape")
+	snap["cpos"] = cpos
+	snap["CX"] = Chunk.CX
+	snap["CY"] = Chunk.CY
+	snap["CZ"] = Chunk.CZ
+	snap["section_count"] = Chunk.SECTION_COUNT
+	snap["section_h"] = Chunk.SECTION_H
+
+	WorkerThreadPool.add_task(Callable(self, "_mesh_worker").bind(snap))
+
 func _drain_rebuild_queue(max_count: int) -> void:
 	if _rebuild_queue.size() == 0:
 		return
@@ -516,14 +957,11 @@ func _drain_rebuild_queue(max_count: int) -> void:
 	var n: int = min(max_count, _rebuild_queue.size())
 	for i in n:
 		var c: Chunk = _rebuild_queue.pop_front()
-		if c == null:
+		if c == null or not is_instance_valid(c) or c.pending_kill:
 			continue
-		if not is_instance_valid(c):
+		if not c.dirty:
 			continue
-		if c.pending_kill:
-			continue
-		if c.dirty:
-			c.rebuild_mesh()
+		_start_mesh_task(c)
 
 static func _n01(x: float) -> float:
 	return 0.5 * (x + 1.0)
@@ -816,7 +1254,7 @@ func _world_tick() -> void:
 
 		var base_x: int = c.chunk_pos.x * CX
 		var base_z: int = c.chunk_pos.z * CZ
-		var samples: int = 20
+		var samples: int = 8
 
 		for i in samples:
 			var x: int = int((i * 7 + _tick_phase * 13) % Chunk.CX)

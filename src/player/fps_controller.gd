@@ -62,6 +62,9 @@ func _apply_push_to_bodies() -> void:
 
 
 func _ready() -> void:
+	self.safe_margin = 0.08
+	self.max_slides = 8 
+	
 	_capture_mouse()
 	if hotbar:
 		current_block_id = hotbar.current_block_id()

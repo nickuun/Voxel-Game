@@ -384,10 +384,12 @@ func rebuild_mesh() -> void:
 	dirty = false
 
 func _set_collision_after_mesh(mesh: ArrayMesh) -> void:
-	if wants_collision and mesh != null and mesh.get_surface_count() > 0:
+	# Never clear here; World decides when to free shapes.
+	if mesh == null or mesh.get_surface_count() == 0:
+		return
+	if wants_collision:
 		collision_shape.shape = mesh.create_trimesh_shape()
-	else:
-		collision_shape.shape = null
+	# else: keep existing shape (if any) until World clears it when far	
 
 func heightmap_raise_if_higher(x: int, z: int, y: int) -> void:
 	var idx: int = _hm_index(x, z)
