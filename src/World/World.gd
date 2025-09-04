@@ -87,6 +87,9 @@ const BEAUTIFY_BUDGET_PER_FRAME := 1         # low background polish pass
 
 var _beautify_queue: Array[Chunk] = []
 
+const USE_GREEDY_TOPS := true   # opaque-only greedy +Y faces in worker
+
+const GREEDY_TOPS_MODE := 1
 
 # =========================================================
 # Lifecycle
@@ -302,6 +305,268 @@ func _drain_mesh_results(max_count:int) -> void:
 			_mesh_results.push_back(pulled[j])
 		_mesh_mutex.unlock()
 
+# Greedy topo layer at fixed y (opaque-only, +Y faces).
+# Builds rectangles in X-Z where:
+#  - current block is opaque (not transparent, not AIR)
+#  - block above is AIR or transparent (face visible)
+# Greedy topo layer at fixed y (opaque-only, +Y faces).
+func _emit_greedy_tops_layer(CX:int, CY:int, CZ:int, blocks:Array, y:int, dst_opaque:Dictionary) -> void:
+	# Build a mask of tiles for this layer; -1 means NO FACE.
+	var tile_mask := []
+	tile_mask.resize(CX)
+	for x in CX:
+		var row := PackedInt32Array()
+		row.resize(CZ)
+		for z in CZ:
+			row[z] = -1  # <- EMPTY
+			var id = blocks[x][y][z]
+			if id != BlockDB.BlockId.AIR and not BlockDB.is_transparent(id):
+				var above_id := BlockDB.BlockId.AIR
+				if y + 1 < CY:
+					above_id = blocks[x][y + 1][z]
+				if not BlockDB.face_hidden_by_neighbor(id, above_id):
+					row[z] = BlockDB.get_face_tile(id, 2)  # +Y tile index (can be 0!)
+		tile_mask[x] = row
+
+	# visited bitmap
+	var visited := []
+	visited.resize(CX)
+	for x in CX:
+		var rowb := PackedByteArray()
+		rowb.resize(CZ)
+		for z in CZ: rowb[z] = 0
+		visited[x] = rowb
+
+	var x := 0
+	while x < CX:
+		var z := 0
+		while z < CZ:
+			if visited[x][z] == 0 and tile_mask[x][z] >= 0:   # <- >= 0 now
+				var tile = tile_mask[x][z]
+
+				# width
+				var w := 1
+				while (x + w) < CX and visited[x + w][z] == 0 and tile_mask[x + w][z] == tile:
+					w += 1
+
+				# height
+				var h := 1
+				while (z + h) < CZ:
+					var row_ok := true
+					for xx in range(x, x + w):
+						if visited[xx][z + h] == 1 or tile_mask[xx][z + h] != tile:
+							row_ok = false
+							break
+					if not row_ok:
+						break
+					h += 1
+
+				# mark
+				for xx in range(x, x + w):
+					for zz in range(z, z + h):
+						visited[xx][zz] = 1
+
+				_emit_top_rect_to(dst_opaque, x, y, z, w, h, tile)
+				z += h
+			else:
+				z += 1
+		x += 1
+
+# Build one merged +Y quad at (x0,z0) of size (w,h); UVs stretch across the rect.
+# (This keeps the atlas simple; if you later want UV tiling instead of stretching,
+# we can move to texture arrays or a shader-based atlas.)
+
+func _emit_top_rect_to(dst:Dictionary, x0:int, y:int, z0:int, w:int, h:int, tile:int) -> void:
+	var nrm := Vector3(0,1,0)
+
+	# Corners of the rect on the +Y plane (nrm up)
+	# BL = (front-left), BR = (front-right), TR = (back-right), TL = (back-left)
+	var vBL := Vector3(x0,     y + 1, z0)
+	var vBR := Vector3(x0 + w, y + 1, z0)
+	var vTR := Vector3(x0 + w, y + 1, z0 + h)
+	var vTL := Vector3(x0,     y + 1, z0 + h)
+
+	# Atlas UVs for one tile (no tiling — stretches across the merged rect)
+	# Your BlockDB.tile_uvs returns [TL, TR, BR, BL]
+	var uvs := BlockDB.tile_uvs(tile)
+	var uvTL := uvs[0]
+	var uvTR := uvs[1]
+	var uvBR := uvs[2]
+	var uvBL := uvs[3]
+
+	# IMPORTANT: match your Chunk.rebuild_mesh() top-face order:
+	# face_i==2 (+Y) originally used quads [TL,TR,BR,BL] and tris (v0,v2,v1) & (v0,v3,v2).
+	# Map that to our rect vertices: vTL(=v0), vTR(=v1), vBR(=v2), vBL(=v3).
+
+	# Tri 1: (TL, BR, TR)
+	dst["v"].append(vTL); dst["v"].append(vBR); dst["v"].append(vTR)
+	dst["n"].append(nrm); dst["n"].append(nrm); dst["n"].append(nrm)
+	dst["uv"].append(uvTL); dst["uv"].append(uvBR); dst["uv"].append(uvTR)
+
+	# Tri 2: (TL, BL, BR)
+	dst["v"].append(vTL); dst["v"].append(vBL); dst["v"].append(vBR)
+	dst["n"].append(nrm); dst["n"].append(nrm); dst["n"].append(nrm)
+	dst["uv"].append(uvTL); dst["uv"].append(uvBL); dst["uv"].append(uvBR)
+
+# Greedy +Y at fixed y using heightmap (opaque only).
+# We emit a top face at (x,z,y) iff y == top_y from heightmap and block is opaque.
+func _emit_greedy_tops_layer_hm(
+		CX:int, CY:int, CZ:int,
+		blocks:Array, heightmap:PackedInt32Array,
+		y:int, dst_opaque:Dictionary
+	) -> void:
+	var tile_mask := []
+	tile_mask.resize(CX)
+	for x in CX:
+		var row := PackedInt32Array()
+		row.resize(CZ)
+		for z in CZ:
+			row[z] = -1  # empty by default
+			var top_y := heightmap[x * CZ + z]
+			if top_y == y:
+				var id = blocks[x][y][z]
+				if id != BlockDB.BlockId.AIR and not BlockDB.is_transparent(id):
+					row[z] = BlockDB.get_face_tile(id, 2)  # +Y tile index (can be 0)
+		tile_mask[x] = row
+
+	# visited bitmap
+	var visited := []
+	visited.resize(CX)
+	for x in CX:
+		var rowb := PackedByteArray()
+		rowb.resize(CZ)
+		for z in CZ: rowb[z] = 0
+		visited[x] = rowb
+
+	var x := 0
+	while x < CX:
+		var z := 0
+		while z < CZ:
+			if visited[x][z] == 0 and tile_mask[x][z] >= 0:
+				var tile = tile_mask[x][z]
+
+				# width along +X
+				var w := 1
+				while (x + w) < CX and visited[x + w][z] == 0 and tile_mask[x + w][z] == tile:
+					w += 1
+
+				# height along +Z
+				var h := 1
+				while (z + h) < CZ:
+					var row_ok := true
+					for xx in range(x, x + w):
+						if visited[xx][z + h] == 1 or tile_mask[xx][z + h] != tile:
+							row_ok = false
+							break
+					if not row_ok:
+						break
+					h += 1
+
+				# mark and emit merged rect
+				for xx in range(x, x + w):
+					for zz in range(z, z + h):
+						visited[xx][zz] = 1
+				_emit_top_rect_to(dst_opaque, x, y, z, w, h, tile)
+
+				z += h
+			else:
+				z += 1
+		x += 1
+
+# Build a visibility mask for +Y faces at a specific y.
+# Returns Array[PackedInt32Array] size [CX][CZ] with:
+#  -1 = no +Y face here
+#  >=0 = tile index for +Y (OK to be 0!)
+func _build_top_mask(CX:int, CY:int, CZ:int, blocks:Array, y:int) -> Array:
+	var mask := []
+	mask.resize(CX)
+	for x in CX:
+		var row := PackedInt32Array()
+		row.resize(CZ)
+		for z in CZ:
+			row[z] = -1
+			var id = blocks[x][y][z]
+			if id == BlockDB.BlockId.AIR: continue
+			if BlockDB.is_transparent(id): continue
+			var neighbor_id := BlockDB.BlockId.AIR
+			if y + 1 < CY:
+				neighbor_id = blocks[x][y + 1][z]
+			if BlockDB.face_hidden_by_neighbor(id, neighbor_id):
+				continue
+			row[z] = BlockDB.get_face_tile(id, 2)  # +Y tile index
+		mask[x] = row
+	return mask
+
+
+# 1D greedy: merge runs along X for each Z row. Very robust and already a big win.
+func _emit_greedy_tops_strips(mask:Array, y:int, dst_opaque:Dictionary) -> void:
+	var CX := mask.size()
+	if CX == 0: return
+	var CZ := (mask[0] as PackedInt32Array).size()
+
+	for z in CZ:
+		var x := 0
+		while x < CX:
+			var tile := (mask[x] as PackedInt32Array)[z]
+			if tile < 0:
+				x += 1
+				continue
+			# extend run
+			var x2 := x + 1
+			while x2 < CX and (mask[x2] as PackedInt32Array)[z] == tile:
+				x2 += 1
+			var w := x2 - x
+			_emit_top_rect_to(dst_opaque, x, y, z, w, 1, tile)
+			x = x2
+
+
+# 2D greedy rectangles (optional). Uses the same mask; merges both axes.
+func _emit_greedy_tops_rects(mask:Array, y:int, dst_opaque:Dictionary) -> void:
+	var CX := mask.size()
+	if CX == 0: return
+	var CZ := (mask[0] as PackedInt32Array).size()
+
+	var visited := []
+	visited.resize(CX)
+	for x in CX:
+		var rowb := PackedByteArray()
+		rowb.resize(CZ)
+		for z in CZ: rowb[z] = 0
+		visited[x] = rowb
+
+	var x := 0
+	while x < CX:
+		var z := 0
+		while z < CZ:
+			if visited[x][z] == 0 and (mask[x] as PackedInt32Array)[z] >= 0:
+				var tile := (mask[x] as PackedInt32Array)[z]
+
+				# width
+				var w := 1
+				while (x + w) < CX and visited[x + w][z] == 0 and (mask[x + w] as PackedInt32Array)[z] == tile:
+					w += 1
+
+				# height
+				var h := 1
+				while (z + h) < CZ:
+					var ok := true
+					for xx in range(x, x + w):
+						if visited[xx][z + h] == 1 or (mask[xx] as PackedInt32Array)[z + h] != tile:
+							ok = false; break
+					if not ok: break
+					h += 1
+
+				# mark & emit
+				for xx in range(x, x + w):
+					for zz in range(z, z + h):
+						visited[xx][zz] = 1
+				_emit_top_rect_to(dst_opaque, x, y, z, w, h, tile)
+				z += h
+			else:
+				z += 1
+		x += 1
+
+
 func _mesh_worker(snap: Dictionary) -> void:
 	var cpos: Vector3i = snap["cpos"]
 	var CX: int = snap["CX"]; var CY: int = snap["CY"]; var CZ: int = snap["CZ"]
@@ -336,26 +601,38 @@ func _mesh_worker(snap: Dictionary) -> void:
 	for s in SECTION_COUNT:
 		var y0 := s * SECTION_H
 		var y1 = min(CY - 1, y0 + SECTION_H - 1)
+
 		var dst_opaque = sections[s]["opaque"]
 		var dst_trans  = sections[s]["trans"]
 
+		# 1) Greedy +Y (opaque only), neighbor-based (works with caves/floating islands)
+		if GREEDY_TOPS_MODE > 0:
+			for y in range(y0, y1 + 1):
+				var mask = _build_top_mask(CX, CY, CZ, blocks, y)  # -1 = no face, otherwise tile index
+				if GREEDY_TOPS_MODE == 1:
+					_emit_greedy_tops_strips(mask, y, dst_opaque)   # simple & robust
+				else:
+					_emit_greedy_tops_rects(mask, y, dst_opaque)    # 2D rectangles
+
+		# 2) Regular emission for everything else:
+		#    - all transparent blocks (all faces)
+		#    - all opaque faces EXCEPT +Y (because greedy handled those when enabled)
 		for x in CX:
 			for z in CZ:
-				var top := heightmap[x * CZ + z]
-				if top < y0:
-					continue
-				var y_max = min(top, y1)
-				for y in range(y0, y_max + 1):
+				for y in range(y0, y1 + 1):
 					var id: int = blocks[x][y][z]
 					if id == BlockDB.BlockId.AIR:
 						continue
+					var is_trans := BlockDB.is_transparent(id)
 
 					for face_i in 6:
-						var nrm: Vector3 = faces[face_i]
+						if GREEDY_TOPS_MODE > 0 and (face_i == 2) and not is_trans:
+							continue  # skip opaque +Y (greedy already emitted)
+
+						var nrm = faces[face_i]
 						var nx := x + int(nrm.x); var ny := y + int(nrm.y); var nz := z + int(nrm.z)
 						var neighbor_id := BlockDB.BlockId.AIR
 						if nx >= 0 and nx < CX and ny >= 0 and ny < CY and nz >= 0 and nz < CZ:
-							# local read is safe from snapshot
 							neighbor_id = blocks[nx][ny][nz]
 						if BlockDB.face_hidden_by_neighbor(id, neighbor_id):
 							continue
@@ -374,9 +651,9 @@ func _mesh_worker(snap: Dictionary) -> void:
 						var uv3 := _chunk_uv_from_local(face_i, quad[3], tile)
 
 						var dst = dst_opaque
-						if BlockDB.is_transparent(id):
-							dst = dst_trans
+						if is_trans: dst = dst_trans
 						_push_quad(dst, [v0,v1,v2,v3], nrm, uv0, uv1, uv2, uv3)
+
 
 	# ------- MICRO (notches) -------
 	# Exactly like your rebuild, but append to dst arrays instead of SurfaceTool.
@@ -419,6 +696,7 @@ func _mesh_worker(snap: Dictionary) -> void:
 	_mesh_mutex.lock()
 	_mesh_results.append(result)
 	_mesh_mutex.unlock()
+	
 
 
 # --- helpers used by the worker ---
@@ -1197,8 +1475,7 @@ func _seed_micro_slopes_terrain(c:Chunk) -> void:
 					placed = true
 
 			if placed: c.dirty = true
-
-
+			
 func _seed_micro_slopes_leaves(c:Chunk) -> void:
 	var base_x:int = c.chunk_pos.x * CX
 	var base_z:int = c.chunk_pos.z * CZ
