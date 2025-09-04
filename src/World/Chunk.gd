@@ -585,6 +585,52 @@ func apply_snapshot(snap: Dictionary) -> void:
 		section_dirty[s] = 1
 	dirty = true
 
+func snapshot_mesh_and_data() -> Dictionary:
+	# NOTE: meshes/shapes are Resources (cheap to keep). We include blocks
+	# so a respawn can restore everything w/out regeneration.
+	var blocks_copy: Array = []
+	blocks_copy.resize(CX)
+	for x in CX:
+		var col := []
+		col.resize(CY)
+		for y in CY:
+			col[y] = (blocks[x][y] as Array).duplicate()
+		blocks_copy[x] = col
+
+	var hm := PackedInt32Array()
+	hm.resize(heightmap_top_solid.size())
+	for i in hm.size():
+		hm[i] = heightmap_top_solid[i]
+
+	var micro_copy := {}
+	for k in micro.keys():
+		var arr: PackedInt32Array = micro[k]
+		var a2 := PackedInt32Array()
+		a2.resize(arr.size())
+		for i in arr.size():
+			a2[i] = arr[i]
+		micro_copy[k] = a2
+
+	return {
+		"blocks": blocks_copy,
+		"heightmap": hm,
+		"micro": micro_copy,
+		"mesh": mesh_instance.mesh,                 # Resource
+		"shape": collision_shape.shape              # Resource (may be null)
+	}
+
+func apply_snapshot_with_mesh(snap: Dictionary) -> void:
+	blocks = snap["blocks"]
+	heightmap_top_solid = snap["heightmap"]
+	micro = snap["micro"]
+	mesh_instance.mesh = snap.get("mesh", null)
+	collision_shape.shape = snap.get("shape", null)
+
+	# Mark clean so we DON’T rebuild on respawn.
+	for s in SECTION_COUNT:
+		section_dirty[s] = 0
+	dirty = false
+
 
 # Returns true if subcell (sx,sy,sz) is present in the 2×2×2 mask.
 # sx/sy/sz must be 0 or 1.

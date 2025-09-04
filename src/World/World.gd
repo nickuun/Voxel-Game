@@ -41,6 +41,11 @@ var leaf_noise   := FastNoiseLite.new()       # crown jitter
 var micro_noise  := FastNoiseLite.new()       # micro smoothing (terrain & canopy)
 var tick_noise   := FastNoiseLite.new()       # replaces RNG in world ticks
 
+# ---- Mesh cache for instant revisits ----
+const MESH_CACHE_LIMIT := 256
+var _mesh_cache := {}                 # Dictionary<Vector3i, Dictionary]
+var _mesh_lru: Array[Vector3i] = []
+
 # ---- Player reference ----
 @export var player_path: NodePath
 var _player: Node3D
@@ -197,6 +202,13 @@ func _drain_spawn_queue(max_count: int) -> void:
 		c.position = Vector3(cpos.x * CX, 0.0, cpos.z * CZ)
 		c.reuse_setup(cpos, atlas)
 		chunks[cpos] = c
+		
+		# If we have a ready mesh/shape, attach & skip heavy work
+		if _mesh_cache_try_restore(c):
+			# Optional: still do micro terrain smoothing if your cache predates it.
+			# Otherwise, we’re done.
+			continue
+
 
 		# Try restoring from cache; if hit, skip generation
 		if _try_restore_from_cache(c):
@@ -248,6 +260,7 @@ func despawn_chunk(cpos: Vector3i) -> void:
 		_add_to_cache(cpos, c.snapshot_data())
 		c.pending_kill = true
 		_remove_from_queues_by_chunk(c)
+		_mesh_cache_put(cpos, c.snapshot_mesh_and_data())
 		_return_chunk_to_pool(c)
 
 func _obtain_chunk() -> Chunk:
@@ -288,6 +301,26 @@ func _remove_from_queues_by_chunk(c: Chunk) -> void:
 		if g != c:
 			new_gen.append(g)
 	_gen_queue = new_gen
+
+func _mesh_cache_touch(cpos: Vector3i) -> void:
+	_mesh_lru.erase(cpos)
+	_mesh_lru.push_front(cpos)
+
+func _mesh_cache_put(cpos: Vector3i, snap: Dictionary) -> void:
+	_mesh_cache[cpos] = snap
+	_mesh_cache_touch(cpos)
+	while _mesh_lru.size() > MESH_CACHE_LIMIT:
+		var old = _mesh_lru.pop_back()
+		_mesh_cache.erase(old)
+
+func _mesh_cache_try_restore(c: Chunk) -> bool:
+	var cpos := c.chunk_pos
+	if not _mesh_cache.has(cpos):
+		return false
+	var snap: Dictionary = _mesh_cache[cpos]
+	c.apply_snapshot_with_mesh(snap)
+	_mesh_cache_touch(cpos)
+	return true
 
 
 # =========================================================
