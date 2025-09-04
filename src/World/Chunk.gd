@@ -378,13 +378,16 @@ func rebuild_mesh() -> void:
 	# Assign mesh
 	mesh_instance.mesh = mesh
 
-	# Colliders only when desired ring wants it (cheap off-ring)
+	# Defer collider creation to avoid same-frame spikes
+	call_deferred("_set_collision_after_mesh", mesh)
+
+	dirty = false
+
+func _set_collision_after_mesh(mesh: ArrayMesh) -> void:
 	if wants_collision and mesh != null and mesh.get_surface_count() > 0:
 		collision_shape.shape = mesh.create_trimesh_shape()
 	else:
 		collision_shape.shape = null
-
-	dirty = false
 
 func heightmap_raise_if_higher(x: int, z: int, y: int) -> void:
 	var idx: int = _hm_index(x, z)
@@ -542,6 +545,46 @@ func _emit_micro_faces(
 						added_trans = true
 
 	return {"opaque": added_opaque, "trans": added_trans}
+
+func snapshot_data() -> Dictionary:
+	# Deep copy blocks (Array<Array<Array<int>>>)
+	var blocks_copy: Array = []
+	blocks_copy.resize(CX)
+	for x in CX:
+		var col := []
+		col.resize(CY)
+		for y in CY:
+			col[y] = (blocks[x][y] as Array).duplicate()  # one level deep
+		blocks_copy[x] = col
+
+	# Copy heightmap
+	var hm := PackedInt32Array()
+	hm.resize(heightmap_top_solid.size())
+	for i in hm.size():
+		hm[i] = heightmap_top_solid[i]
+
+	# Copy micro dict
+	var micro_copy := {}
+	for k in micro.keys():
+		var arr: PackedInt32Array = micro[k]
+		var arr_copy := PackedInt32Array()
+		arr_copy.resize(arr.size())
+		for i in arr.size():
+			arr_copy[i] = arr[i]
+		micro_copy[k] = arr_copy
+
+	return {"blocks": blocks_copy, "heightmap": hm, "micro": micro_copy}
+
+func apply_snapshot(snap: Dictionary) -> void:
+	blocks = snap["blocks"]
+	heightmap_top_solid = snap["heightmap"]
+	micro = snap["micro"]
+
+	# mark everything dirty
+	for s in SECTION_COUNT:
+		section_dirty[s] = 1
+	dirty = true
+
 
 # Returns true if subcell (sx,sy,sz) is present in the 2×2×2 mask.
 # sx/sy/sz must be 0 or 1.
