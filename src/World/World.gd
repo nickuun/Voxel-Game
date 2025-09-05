@@ -32,7 +32,7 @@ const SPAWN_BUDGET_PER_FRAME: int = 2				# spawn at most N new chunk nodes / fra
 const GEN_BUDGET_PER_FRAME: int = 2					# generate block data for at most N chunks / frame
 # BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
 const CHUNK_POOL_SIZE: int = 64						# simple pool upper bound
-const GEN_TASK_CONCURRENCY := 3  # optional cap
+const GEN_TASK_CONCURRENCY := 6 # optional cap
 
 # ---- Noises (deterministic) ----
 var height_noise := FastNoiseLite.new()       # terrain height
@@ -94,12 +94,18 @@ const GREEDY_TOPS_MODE := 1
 var MAT_OPAQUE: StandardMaterial3D
 var MAT_TRANS: StandardMaterial3D
 
+const HIDE_DIM := 256  # adjust if your block IDs exceed 255
+var HIDE_LUT := PackedByteArray()
+
+const MESH_TASK_CONCURRENCY := 6  # 0 = unlimited
+
 # =========================================================
 # Lifecycle
 # =========================================================
 func _ready() -> void:
 	atlas = load(BlockDB.ATLAS_PATH)
 	BlockDB.configure_from_texture(atlas)
+	_build_hide_lut()
 
 	MAT_OPAQUE = StandardMaterial3D.new()
 	MAT_OPAQUE.albedo_texture = atlas
@@ -108,9 +114,6 @@ func _ready() -> void:
 
 	MAT_TRANS = MAT_OPAQUE.duplicate()
 	MAT_TRANS.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	
-	atlas = load(BlockDB.ATLAS_PATH)
-	BlockDB.configure_from_texture(atlas)
 
 	# Terrain
 	height_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
@@ -207,6 +210,22 @@ func _process(dt: float) -> void:
 	_drain_mesh_results(MESH_APPLY_BUDGET_PER_FRAME)
 	_drain_beautify_queue(BEAUTIFY_BUDGET_PER_FRAME)
 	_ensure_near_colliders()
+
+func _build_hide_lut() -> void:
+	var N := HIDE_DIM * HIDE_DIM
+	HIDE_LUT.resize((N + 7) / 8)
+	# Compute once (on main thread) using your current rules
+	for a in HIDE_DIM:
+		for b in HIDE_DIM:
+			if BlockDB.face_hidden_by_neighbor(a, b):
+				var idx := a * HIDE_DIM + b
+				HIDE_LUT[idx >> 3] |= (1 << (idx & 7))
+
+func _face_hidden_fast(a:int, b:int) -> bool:
+	if b == BlockDB.BlockId.AIR:
+		return false
+	var idx := a * HIDE_DIM + b
+	return ((HIDE_LUT[idx >> 3] >> (idx & 7)) & 1) == 1
 
 # =========================================================
 # Streaming chunks around player
@@ -315,7 +334,7 @@ func _drain_mesh_results(max_count:int) -> void:
 		i += 1
 
 		# Only time-slice AFTER we’ve applied at least one result
-		if applied > 0 and (Time.get_ticks_usec() - t0) > SLICE_US:
+		if applied > 0 and (Time.get_ticks_usec() - t0) > SLICE_US:	
 			break
 
 	# Re-queue ALL leftovers so nothing gets lost
@@ -511,7 +530,7 @@ func _build_top_mask(CX:int, CY:int, CZ:int, blocks:Array, y:int) -> Array:
 			var neighbor_id := BlockDB.BlockId.AIR
 			if y + 1 < CY:
 				neighbor_id = blocks[x][y + 1][z]
-			if BlockDB.face_hidden_by_neighbor(id, neighbor_id):
+			if _face_hidden_fast(id, neighbor_id):
 				continue
 			row[z] = BlockDB.get_face_tile(id, 2)  # +Y tile index
 		mask[x] = row
@@ -654,7 +673,7 @@ func _mesh_worker(snap: Dictionary) -> void:
 						var neighbor_id := BlockDB.BlockId.AIR
 						if nx >= 0 and nx < CX and ny >= 0 and ny < CY and nz >= 0 and nz < CZ:
 							neighbor_id = blocks[nx][ny][nz]
-						if BlockDB.face_hidden_by_neighbor(id, neighbor_id):
+						if _face_hidden_fast(id, neighbor_id):
 							continue
 
 						var base := Vector3(x, y, z)
@@ -665,10 +684,12 @@ func _mesh_worker(snap: Dictionary) -> void:
 						var v3 = base + quad[3]
 
 						var tile := BlockDB.get_face_tile(id, face_i)
-						var uv0 := _chunk_uv_from_local(face_i, quad[0], tile)
-						var uv1 := _chunk_uv_from_local(face_i, quad[1], tile)
-						var uv2 := _chunk_uv_from_local(face_i, quad[2], tile)
-						var uv3 := _chunk_uv_from_local(face_i, quad[3], tile)
+						var uvs := BlockDB.tile_uvs(tile)  # once
+						var uv0 := _chunk_uv_from_local_pre(face_i, quad[0], uvs)
+						var uv1 := _chunk_uv_from_local_pre(face_i, quad[1], uvs)
+						var uv2 := _chunk_uv_from_local_pre(face_i, quad[2], uvs)
+						var uv3 := _chunk_uv_from_local_pre(face_i, quad[3], uvs)
+
 
 						var dst = dst_opaque
 						if is_trans: dst = dst_trans
@@ -716,6 +737,22 @@ func _mesh_worker(snap: Dictionary) -> void:
 	_mesh_mutex.lock()
 	_mesh_results.append(result)
 	_mesh_mutex.unlock()
+
+func _chunk_uv_from_local_pre(face_i:int, local:Vector3, uvs:Array) -> Vector2:
+	var u0 := (uvs[0] as Vector2).x
+	var v0 := (uvs[0] as Vector2).y
+	var u1 := (uvs[2] as Vector2).x
+	var v1 := (uvs[2] as Vector2).y
+	var s := 0.0
+	var t := 0.0
+	match face_i:
+		0: s = local.z;           t = 1.0 - local.y
+		1: s = 1.0 - local.z;     t = 1.0 - local.y
+		2: s = local.x;           t = 1.0 - local.z
+		3: s = local.x;           t = local.z
+		4: s = local.x;           t = 1.0 - local.y
+		5: s = 1.0 - local.x;     t = 1.0 - local.y
+	return Vector2(lerpf(u0, u1, s), lerpf(v0, v1, t))
 
 # --- helpers used by the worker ---
 
@@ -799,7 +836,7 @@ func _emit_micro_faces_arrays(CX:int,CY:int,CZ:int, blocks:Array, cell_lp:Vector
 
 						if check and nx>=0 and nx<CX and ny>=0 and ny<CY and nz>=0 and nz<CZ:
 							var neighbor_id = blocks[nx][ny][nz]
-							if BlockDB.face_hidden_by_neighbor(base_id, neighbor_id):
+							if _face_hidden_fast(base_id, neighbor_id):
 								cull = true
 
 					if cull: continue
@@ -811,10 +848,12 @@ func _emit_micro_faces_arrays(CX:int,CY:int,CZ:int, blocks:Array, cell_lp:Vector
 					var v3 = sub_origin + quad[3] * size
 					var nrm = faces[face_i]
 					var tile := BlockDB.get_face_tile(base_id, face_i)
-					var uv0 := _chunk_uv_from_local(face_i, quad[0], tile)
-					var uv1 := _chunk_uv_from_local(face_i, quad[1], tile)
-					var uv2 := _chunk_uv_from_local(face_i, quad[2], tile)
-					var uv3 := _chunk_uv_from_local(face_i, quad[3], tile)
+					var uvs := BlockDB.tile_uvs(tile)
+					var uv0 := _chunk_uv_from_local_pre(face_i, quad[0], uvs)
+					var uv1 := _chunk_uv_from_local_pre(face_i, quad[1], uvs)
+					var uv2 := _chunk_uv_from_local_pre(face_i, quad[2], uvs)
+					var uv3 := _chunk_uv_from_local_pre(face_i, quad[3], uvs)
+
 
 					var dst := out_o
 					if BlockDB.is_transparent(base_id):
@@ -1220,7 +1259,14 @@ func _queue_rebuild(c: Chunk) -> void:
 		_rebuild_queue.append(c)
 
 func _start_mesh_task(c: Chunk) -> void:
+	if MESH_TASK_CONCURRENCY > 0 and _mesh_tasks.size() >= MESH_TASK_CONCURRENCY:
+		# Try again next frame; keep near chunks responsive
+		if not _rebuild_queue.has(c):
+			_rebuild_queue.push_front(c)
+		return
+		
 	var cpos := c.chunk_pos
+	
 	if _mesh_tasks.has(cpos):
 		return
 	_mesh_tasks[cpos] = true

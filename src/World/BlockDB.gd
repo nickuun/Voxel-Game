@@ -207,14 +207,20 @@ static var BLOCKS := {
 	BlockId.DIRT:   {"name":"Dirt", "opaque":true,  "tex_all":21},
 	BlockId.STONE:  {"name":"Stone","opaque":true,  "tex_all":1},
 	BlockId.WOOD:   {"name":"Wood Planks","opaque":true, "tex_all":6},
-	BlockId.LEAVES: {
+		BlockId.LEAVES: {
 		"name":"Leaves",
-		"opaque": false,                   # was true → this was forcing cull
-		"transparent": true,
-		"tex_all": 83,
-		"cull_same_transparent": false,     # <— NEW: keep faces between touching leaves
-		"two_sided": true
+		"opaque": true,                   # was true → this was forcing cull
+		"transparent": false,
+		"tex_all": 3,
 	},
+	#BlockId.LEAVES: {
+		#"name":"Leaves",
+		#"opaque": false,                   # was true → this was forcing cull
+		#"transparent": true,
+		#"tex_all": 83,
+		#"cull_same_transparent": false,     # <— NEW: keep faces between touching leaves
+		#"two_sided": true
+	#},
 	BlockId.SAND:   {"name":"Sand", "opaque":true,  "tex_all":2},
 	BlockId.GLASS: {
 		"name":"Glass",
