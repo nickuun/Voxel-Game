@@ -91,10 +91,24 @@ const USE_GREEDY_TOPS := true   # opaque-only greedy +Y faces in worker
 
 const GREEDY_TOPS_MODE := 1
 
+var MAT_OPAQUE: StandardMaterial3D
+var MAT_TRANS: StandardMaterial3D
+
 # =========================================================
 # Lifecycle
 # =========================================================
 func _ready() -> void:
+	atlas = load(BlockDB.ATLAS_PATH)
+	BlockDB.configure_from_texture(atlas)
+
+	MAT_OPAQUE = StandardMaterial3D.new()
+	MAT_OPAQUE.albedo_texture = atlas
+	MAT_OPAQUE.roughness = 1.0
+	MAT_OPAQUE.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+
+	MAT_TRANS = MAT_OPAQUE.duplicate()
+	MAT_TRANS.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	
 	atlas = load(BlockDB.ATLAS_PATH)
 	BlockDB.configure_from_texture(atlas)
 
@@ -220,23 +234,25 @@ func _drain_mesh_results(max_count:int) -> void:
 
 	# Sort by distance to player (nearest first)
 	pulled.sort_custom(func(a, b):
-		var da := _dist2_chunk_to_player(a["cpos"])
-		var db := _dist2_chunk_to_player(b["cpos"])
-		return da < db
+		return _dist2_chunk_to_player(a["cpos"]) < _dist2_chunk_to_player(b["cpos"])
 	)
 
 	# Boost budget if any result is within the collision ring
 	var budget := max_count
+	var center := _player_chunk()
 	for r in pulled:
 		var cpos: Vector3i = r["cpos"]
-		var dx = abs(cpos.x - _player_chunk().x)
-		var dz = abs(cpos.z - _player_chunk().z)
+		var dx = abs(cpos.x - center.x)
+		var dz = abs(cpos.z - center.z)
 		if dx <= COLLISION_ON_RADIUS and dz <= COLLISION_ON_RADIUS:
 			budget = MESH_APPLY_BUDGET_NEAR
 			break
 
 	var applied := 0
 	var i := 0
+	var t0 := Time.get_ticks_usec()
+	const SLICE_US := 4000  # try 4000–6000 if 3000 is too tight
+
 	while i < pulled.size() and applied < budget:
 		var r = pulled[i]
 		var cpos: Vector3i = r["cpos"]
@@ -245,52 +261,52 @@ func _drain_mesh_results(max_count:int) -> void:
 		if chunks.has(cpos):
 			var c: Chunk = chunks[cpos]
 			if c != null and is_instance_valid(c) and not c.pending_kill:
-				# Build mesh from arrays
-				var mesh := ArrayMesh.new()
-				var mat_opaque: Material = c.material
-				var mat_trans: StandardMaterial3D
-				if c.material is StandardMaterial3D:
-					mat_trans = (c.material as StandardMaterial3D).duplicate()
+				var mesh := c.mesh_instance.mesh
+				if mesh == null:
+					mesh = ArrayMesh.new()
+					c.mesh_instance.mesh = mesh
 				else:
-					mat_trans = StandardMaterial3D.new()
-				mat_trans.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+					mesh.clear_surfaces()  # reuse
 
-				var sections: Array = r["sections"]
-				for s in sections.size():
-					var so = sections[s]["opaque"]
+				# ---------- build two buckets (opaque/trans) ----------
+				var o_v := PackedVector3Array(); var o_n := PackedVector3Array(); var o_uv := PackedVector2Array()
+				var t_v := PackedVector3Array(); var t_n := PackedVector3Array(); var t_uv := PackedVector2Array()
+
+				for s in r["sections"].size():
+					var so = r["sections"][s]["opaque"]
 					if so["v"].size() > 0:
-						var arr := []
-						arr.resize(Mesh.ARRAY_MAX)
-						arr[Mesh.ARRAY_VERTEX] = so["v"]
-						arr[Mesh.ARRAY_NORMAL] = so["n"]
-						arr[Mesh.ARRAY_TEX_UV] = so["uv"]
-						var idx := mesh.get_surface_count()
-						mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
-						mesh.surface_set_material(idx, mat_opaque)
-
-					var st = sections[s]["trans"]
+						o_v.append_array(so["v"]); o_n.append_array(so["n"]); o_uv.append_array(so["uv"])
+					var st = r["sections"][s]["trans"]
 					if st["v"].size() > 0:
-						var arr2 := []
-						arr2.resize(Mesh.ARRAY_MAX)
-						arr2[Mesh.ARRAY_VERTEX] = st["v"]
-						arr2[Mesh.ARRAY_NORMAL] = st["n"]
-						arr2[Mesh.ARRAY_TEX_UV] = st["uv"]
-						var idx2 := mesh.get_surface_count()
-						mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr2)
-						mesh.surface_set_material(idx2, mat_trans)
+						t_v.append_array(st["v"]); t_n.append_array(st["n"]); t_uv.append_array(st["uv"])
 
-				c.mesh_instance.mesh = mesh
+				if o_v.size() > 0:
+					var arr := []; arr.resize(Mesh.ARRAY_MAX)
+					arr[Mesh.ARRAY_VERTEX] = o_v
+					arr[Mesh.ARRAY_NORMAL] = o_n
+					arr[Mesh.ARRAY_TEX_UV] = o_uv
+					var idx := mesh.get_surface_count()
+					mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+					mesh.surface_set_material(idx, MAT_OPAQUE)  # shared
 
-				# Immediate collider if near; defer if far
-				var dx = abs(c.chunk_pos.x - _player_chunk().x)
-				var dz = abs(c.chunk_pos.z - _player_chunk().z)
-				if c.wants_collision and dx <= COLLISION_ON_RADIUS and dz <= COLLISION_ON_RADIUS:
-					c._set_collision_after_mesh(mesh)     # immediate
+				if t_v.size() > 0:
+					var arr2 := []; arr2.resize(Mesh.ARRAY_MAX)
+					arr2[Mesh.ARRAY_VERTEX] = t_v
+					arr2[Mesh.ARRAY_NORMAL] = t_n
+					arr2[Mesh.ARRAY_TEX_UV] = t_uv
+					var idx2 := mesh.get_surface_count()
+					mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr2)
+					mesh.surface_set_material(idx2, MAT_TRANS)  # shared
+
+				# collider policy (near ring = immediate, otherwise deferred)
+				var dx2 = abs(c.chunk_pos.x - center.x)
+				var dz2 = abs(c.chunk_pos.z - center.z)
+				if c.wants_collision and dx2 <= COLLISION_ON_RADIUS and dz2 <= COLLISION_ON_RADIUS:
+					c._set_collision_after_mesh(mesh)
 				else:
 					c.call_deferred("_set_collision_after_mesh", mesh)
 
-				for s in c.SECTION_COUNT:
-					c.section_dirty[s] = 0
+				for s in c.SECTION_COUNT: c.section_dirty[s] = 0
 				c.dirty = false
 
 				_mesh_cache_put(cpos, c.snapshot_mesh_and_data())
@@ -298,7 +314,11 @@ func _drain_mesh_results(max_count:int) -> void:
 
 		i += 1
 
-	# Re-queue ALL leftovers we didn’t apply this frame (nothing gets lost)
+		# Only time-slice AFTER we’ve applied at least one result
+		if applied > 0 and (Time.get_ticks_usec() - t0) > SLICE_US:
+			break
+
+	# Re-queue ALL leftovers so nothing gets lost
 	if i < pulled.size():
 		_mesh_mutex.lock()
 		for j in range(i, pulled.size()):
@@ -696,8 +716,6 @@ func _mesh_worker(snap: Dictionary) -> void:
 	_mesh_mutex.lock()
 	_mesh_results.append(result)
 	_mesh_mutex.unlock()
-	
-
 
 # --- helpers used by the worker ---
 
