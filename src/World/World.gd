@@ -9,7 +9,7 @@ const CZ := Chunk.CZ
 const RENDER_RADIUS := 5        # in chunks (5 => 11x11)
 const TICK_SECONDS := 0.5
 
-const PRELOAD_RADIUS := RENDER_RADIUS + 1   # one ring ahead for prewarm
+const PRELOAD_RADIUS := RENDER_RADIUS + 5   # one ring ahead for prewarm
 const BUILD_BUDGET_PER_FRAME := 2           # rebuild at most N chunks per frame
 
 # ---- Micro smoothing thresholds ----
@@ -32,7 +32,7 @@ const SPAWN_BUDGET_PER_FRAME: int = 2				# spawn at most N new chunk nodes / fra
 const GEN_BUDGET_PER_FRAME: int = 2					# generate block data for at most N chunks / frame
 # BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
 const CHUNK_POOL_SIZE: int = 64						# simple pool upper bound
-
+const GEN_TASK_CONCURRENCY := 3  # optional cap
 
 # ---- Noises (deterministic) ----
 var height_noise := FastNoiseLite.new()       # terrain height
@@ -915,27 +915,25 @@ func _drain_spawn_queue(max_count: int) -> void:
 func _drain_gen_queue(max_count: int) -> void:
 	if _gen_queue.size() == 0:
 		return
+
 	# Nearest-first
 	var p: Vector3 = _player.global_position
 	_gen_queue.sort_custom(func(a, b):
-		var ap: Vector3 = a.position
-		var bp: Vector3 = b.position
-		return ap.distance_squared_to(p) < bp.distance_squared_to(p)
+		return a.position.distance_squared_to(p) < b.position.distance_squared_to(p)
 	)
+
 	var n: int = min(max_count, _gen_queue.size())
+	var started := 0
 	for i in n:
+		if GEN_TASK_CONCURRENCY > 0 and _gen_tasks.size() >= GEN_TASK_CONCURRENCY:
+			break  # don't flood the pool this frame
+
 		var c: Chunk = _gen_queue.pop_front()
-		if c == null:
+		if c == null or not is_instance_valid(c) or c.pending_kill:
 			continue
-		if not is_instance_valid(c):
-			continue
-		if c.pending_kill:
-			continue
-		# Do deterministic gen now; heavy mesh build will be queued
-		generate_chunk_blocks(c)
-		_seed_micro_slopes_terrain(c)
-		# _seed_micro_slopes_leaves(c) # optional
-		_queue_rebuild(c)
+
+		_start_gen_task(c)  # ← run generation off-thread
+		started += 1
 
 func spawn_chunk(cpos: Vector3i) -> void:
 	# Kept for compatibility if you still call it anywhere
@@ -1372,6 +1370,8 @@ func generate_chunk_blocks(c: Chunk) -> void:
 					id = BlockDB.BlockId.STONE
 				c.set_block(Vector3i(x, y, z), id)
 
+			c.heightmap_set_top(x, z, h - 1)
+			
 			# Trees...
 			var place_val: float = _n2d01(tree_noise, wx, wz)
 			if place_val > 0.80:
@@ -1380,7 +1380,6 @@ func generate_chunk_blocks(c: Chunk) -> void:
 				_place_tree_deterministic(c, Vector3i(x, h, z), t_height, wx, wz)
 
 			# Update cached top solid per (x,z)
-			#c.heightmap_set_top(x, z, h - 1)
 
 
 
