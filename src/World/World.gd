@@ -101,6 +101,10 @@ const HIDE_DIM := 256  # adjust if your block IDs exceed 255
 var HIDE_LUT := PackedByteArray()
 
 const MESH_TASK_CONCURRENCY := 3  # 0 = unlimited
+const COLLIDER_BUILD_BUDGET_PER_FRAME: int = 1
+
+var _collider_queue: Array[Chunk] = []
+var _collider_enqueued := {}   # Dictionary<Chunk, bool>
 
 # =========================================================
 # Lifecycle
@@ -158,6 +162,27 @@ func _ready() -> void:
 	_update_chunks_around_player(true)
 	BlockDB.register_notch_blocks()
 
+func _queue_collider_build(c: Chunk) -> void:
+	if c == null or not is_instance_valid(c) or c.pending_kill:
+		return
+	if _collider_enqueued.get(c, false):
+		return
+	_collider_enqueued[c] = true
+	_collider_queue.append(c)
+
+func _drain_collider_queue(max_count: int) -> void:
+	var built := 0
+	while built < max_count and _collider_queue.size() > 0:
+		var c: Chunk = _collider_queue.pop_front()
+		_collider_enqueued.erase(c)
+		if c == null or not is_instance_valid(c) or c.pending_kill:
+			continue
+		if c.mesh_instance.mesh == null or c.mesh_instance.mesh.get_surface_count() == 0:
+			continue
+		# the only heavy bit happens here, and now it's strictly budgeted:
+		c._set_collision_after_mesh(c.mesh_instance.mesh)
+		built += 1
+
 func _drain_beautify_queue(max_count:int) -> void:
 	if _beautify_queue.size() == 0:
 		return
@@ -191,8 +216,7 @@ func _ensure_near_colliders() -> void:
 			if c.collision_shape.shape == null:
 				var m := c.mesh_instance.mesh
 				if m != null and m.get_surface_count() > 0:
-					# Instant collider if we’re near and mesh exists
-					c._set_collision_after_mesh(m)
+					_queue_collider_build(c)
 
 
 func _process(dt: float) -> void:
@@ -211,6 +235,7 @@ func _process(dt: float) -> void:
 	_drain_rebuild_queue(BUILD_BUDGET_PER_FRAME)
 	_drain_gen_results(APPLY_GEN_BUDGET_PER_FRAME)
 	_drain_mesh_results(MESH_APPLY_BUDGET_PER_FRAME)
+	_drain_collider_queue(COLLIDER_BUILD_BUDGET_PER_FRAME)
 	_drain_beautify_queue(BEAUTIFY_BUDGET_PER_FRAME)
 	_ensure_near_colliders()
 
@@ -323,10 +348,8 @@ func _drain_mesh_results(max_count:int) -> void:
 				# collider policy (near ring = immediate, otherwise deferred)
 				var dx2 = abs(c.chunk_pos.x - center.x)
 				var dz2 = abs(c.chunk_pos.z - center.z)
-				if c.wants_collision and dx2 <= COLLISION_ON_RADIUS and dz2 <= COLLISION_ON_RADIUS:
-					c._set_collision_after_mesh(mesh)
-				else:
-					c.call_deferred("_set_collision_after_mesh", mesh)
+				if c.wants_collision:
+					_queue_collider_build(c)  # never bake immediately
 
 				for s in c.SECTION_COUNT: c.section_dirty[s] = 0
 				c.dirty = false
