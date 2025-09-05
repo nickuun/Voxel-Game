@@ -9,8 +9,8 @@ const CZ := Chunk.CZ
 const RENDER_RADIUS := 5        # in chunks (5 => 11x11)
 const TICK_SECONDS := 0.5
 
-const PRELOAD_RADIUS := RENDER_RADIUS + 5   # one ring ahead for prewarm
-const BUILD_BUDGET_PER_FRAME := 2           # rebuild at most N chunks per frame
+const PRELOAD_RADIUS := RENDER_RADIUS + 2   # one ring ahead for prewarm
+const BUILD_BUDGET_PER_FRAME := 1           # rebuild at most N chunks per frame
 
 # ---- Micro smoothing thresholds ----
 const MICRO_TERRAIN_GATE := 0.15
@@ -28,11 +28,11 @@ var _tick_phase := 0
 
 const COLLISION_RADIUS: int = 2						# chunks near player that get colliders
 const TICK_CHUNK_RADIUS: int = 3					# chunks near player that tick simulation
-const SPAWN_BUDGET_PER_FRAME: int = 2				# spawn at most N new chunk nodes / frame
-const GEN_BUDGET_PER_FRAME: int = 2					# generate block data for at most N chunks / frame
+const SPAWN_BUDGET_PER_FRAME: int = 1				# spawn at most N new chunk nodes / frame
+const GEN_BUDGET_PER_FRAME: int = 1					# generate block data for at most N chunks / frame
 # BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
 const CHUNK_POOL_SIZE: int = 64						# simple pool upper bound
-const GEN_TASK_CONCURRENCY := 6 # optional cap
+const GEN_TASK_CONCURRENCY := 3 # optional cap
 
 # ---- Noises (deterministic) ----
 var height_noise := FastNoiseLite.new()       # terrain height
@@ -50,7 +50,7 @@ var _mesh_lru: Array[Vector3i] = []
 var _mesh_tasks := {}              # cpos -> true (avoid dup)
 var _mesh_results: Array = []      # worker → main
 var _mesh_mutex := Mutex.new()
-const MESH_APPLY_BUDGET_PER_FRAME := 2
+const MESH_APPLY_BUDGET_PER_FRAME := 1
 
 # ---- Player reference ----
 @export var player_path: NodePath
@@ -66,7 +66,7 @@ var _chunk_pool: Array[Chunk] = []					# recycled chunks
 
 # ---- Threaded generation & caching ----
 const CACHE_LIMIT := 256                          # how many chunk datas to keep
-const APPLY_GEN_BUDGET_PER_FRAME := 3             # apply N generated results / frame
+const APPLY_GEN_BUDGET_PER_FRAME := 1             # apply N generated results / frame
 
 var _chunk_cache := {}                            # Dictionary<Vector3i, Dictionary snapshot]
 var _cache_lru: Array[Vector3i] = []              # most-recent-first positions
@@ -82,7 +82,7 @@ const COLLISION_ON_RADIUS := COLLISION_RADIUS # turn ON at this distance
 const COLLISION_OFF_RADIUS := COLLISION_RADIUS + 1  # turn OFF only when 1 ring farther
 
 # --- Priorities / budgets ---
-const MESH_APPLY_BUDGET_NEAR := 6            # apply more results when near chunks are pending
+const MESH_APPLY_BUDGET_NEAR := 1            # apply more results when near chunks are pending
 const BEAUTIFY_BUDGET_PER_FRAME := 1         # low background polish pass
 
 var _beautify_queue: Array[Chunk] = []
@@ -90,6 +90,9 @@ var _beautify_queue: Array[Chunk] = []
 const USE_GREEDY_TOPS := true   # opaque-only greedy +Y faces in worker
 
 const GREEDY_TOPS_MODE := 1
+const GREEDY_BOTTOMS := true         # merge -Y opaque faces
+const GREEDY_SIDES   := true         # merge ±X and ±Z opaque faces
+
 
 var MAT_OPAQUE: StandardMaterial3D
 var MAT_TRANS: StandardMaterial3D
@@ -97,7 +100,7 @@ var MAT_TRANS: StandardMaterial3D
 const HIDE_DIM := 256  # adjust if your block IDs exceed 255
 var HIDE_LUT := PackedByteArray()
 
-const MESH_TASK_CONCURRENCY := 6  # 0 = unlimited
+const MESH_TASK_CONCURRENCY := 3  # 0 = unlimited
 
 # =========================================================
 # Lifecycle
@@ -349,6 +352,7 @@ func _drain_mesh_results(max_count:int) -> void:
 #  - current block is opaque (not transparent, not AIR)
 #  - block above is AIR or transparent (face visible)
 # Greedy topo layer at fixed y (opaque-only, +Y faces).
+
 func _emit_greedy_tops_layer(CX:int, CY:int, CZ:int, blocks:Array, y:int, dst_opaque:Dictionary) -> void:
 	# Build a mask of tiles for this layer; -1 means NO FACE.
 	var tile_mask := []
