@@ -6,7 +6,7 @@ const CY := Chunk.CY
 const CZ := Chunk.CZ
 
 # ---- Player-centered streaming ----
-const RENDER_RADIUS := 5        # in chunks (5 => 11x11)
+const RENDER_RADIUS := 10        # in chunks (5 => 11x11)
 const TICK_SECONDS := 0.5
 
 const PRELOAD_RADIUS := RENDER_RADIUS + 2   # one ring ahead for prewarm
@@ -393,12 +393,15 @@ func _drain_mesh_results(max_count:int) -> void:
 		if chunks.has(cpos):
 			var c: Chunk = chunks[cpos]
 			if c != null and is_instance_valid(c) and not c.pending_kill:
+				# NEW: detect edits after snapshot
+				var changed_after_snapshot := c.dirty
+
 				var mesh := c.mesh_instance.mesh
 				if mesh == null:
 					mesh = ArrayMesh.new()
 					c.mesh_instance.mesh = mesh
 				else:
-					mesh.clear_surfaces()  # reuse
+					mesh.clear_surfaces()
 
 				# ---------- build two buckets (opaque/trans) ----------
 				var o_v := PackedVector3Array(); var o_n := PackedVector3Array(); var o_uv := PackedVector2Array()
@@ -430,14 +433,24 @@ func _drain_mesh_results(max_count:int) -> void:
 					mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr2)
 					mesh.surface_set_material(idx2, MAT_TRANS)  # shared
 
-				# collider policy (near ring = immediate, otherwise deferred)
+				# collider policy (avoid building collider for stale mesh)
 				var dx2 = abs(c.chunk_pos.x - center.x)
 				var dz2 = abs(c.chunk_pos.z - center.z)
-				if c.wants_collision:
-					_queue_collider_build(c)  # never bake immediately
+				if c.wants_collision and not changed_after_snapshot:
+					_queue_collider_build(c)
 
-				for s in c.SECTION_COUNT: c.section_dirty[s] = 0
-				c.dirty = false
+				# ---- IMPORTANT: don't clobber a real dirty ----
+				for s in c.SECTION_COUNT:
+					c.section_dirty[s] = 0
+
+				if changed_after_snapshot:
+					# A newer mutation happened while this worker ran.
+					# Keep dirty and ensure it rebuilds ASAP so notches/micro show up.
+					c.dirty = true
+					if not _rebuild_queue.has(c):
+						_rebuild_queue.push_front(c)
+				else:
+					c.dirty = false
 
 				_mesh_cache_put(cpos, c.snapshot_mesh_and_data())
 				applied += 1
@@ -1729,20 +1742,19 @@ func _queue_rebuild(c: Chunk) -> void:
 
 func _start_mesh_task(c: Chunk) -> void:
 	if MESH_TASK_CONCURRENCY > 0 and _mesh_tasks.size() >= MESH_TASK_CONCURRENCY:
-		# Try again next frame; keep near chunks responsive
 		if not _rebuild_queue.has(c):
 			_rebuild_queue.push_front(c)
 		return
-		
+
 	var cpos := c.chunk_pos
-	
 	if _mesh_tasks.has(cpos):
 		return
 	_mesh_tasks[cpos] = true
 
-	# Take a snapshot the worker can read (arrays only, no Resources)
+	# NEW: mark snapshot point. Any edits after this set dirty back to true.
+	c.dirty = false
+
 	var snap := c.snapshot_mesh_and_data()
-	# We don’t need existing mesh/shape in worker; remove to keep payload light
 	snap.erase("mesh")
 	snap.erase("shape")
 	snap["cpos"] = cpos
