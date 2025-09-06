@@ -232,7 +232,7 @@ func _uv_from_local(face_i:int, local:Vector3, tile:int) -> Vector2:
 		2: s = local.x;           t = 1.0 - local.z   # +Y
 		3: s = local.x;           t = local.z         # -Y
 		4: s = local.x;           t = 1.0 - local.y   # +Z
-		5: s = 1.0 - local.x;     t = local.y         # -Z  (flipped t)
+		5: s = 1.0 - local.x;     t = local.y
 	return Vector2(lerpf(u0, u1, s), lerpf(v0, v1, t))
 
 	

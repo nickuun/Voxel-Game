@@ -1218,7 +1218,7 @@ func _chunk_uv_from_local_pre(face_i:int, local:Vector3, uvs:Array) -> Vector2:
 		2: s = local.x;           t = 1.0 - local.z   # +Y (top)
 		3: s = local.x;           t = local.z         # -Y (bottom)
 		4: s = local.x;           t = 1.0 - local.y   # +Z
-		5: s = 1.0 - local.x;     t = local.y         # -Z  (flipped t)
+		5: s = 1.0 - local.x;     t = local.y         # -Z 
 	return Vector2(lerpf(u0, u1, s), lerpf(v0, v1, t))
 
 
@@ -1317,10 +1317,25 @@ func _emit_micro_faces_arrays(CX:int,CY:int,CZ:int, blocks:Array, cell_lp:Vector
 					var nrm = faces[face_i]
 					var tile := BlockDB.get_face_tile(base_id, face_i)
 					var uvs := BlockDB.tile_uvs(tile)
-					var uv0 := _chunk_uv_from_local_pre(face_i, quad[0], uvs)
-					var uv1 := _chunk_uv_from_local_pre(face_i, quad[1], uvs)
-					var uv2 := _chunk_uv_from_local_pre(face_i, quad[2], uvs)
-					var uv3 := _chunk_uv_from_local_pre(face_i, quad[3], uvs)
+
+					# Use copies of the local quad verts for UVs (don’t touch geometry).
+					var l0 = quad[0]
+					var l1 = quad[1]
+					var l2 = quad[2]
+					var l3 = quad[3]
+
+					# Flip V only for -Z so micro faces match big-block mapping.
+					if face_i == 5:
+						l0.y = 1.0 - l0.y
+						l1.y = 1.0 - l1.y
+						l2.y = 1.0 - l2.y
+						l3.y = 1.0 - l3.y
+
+					var uv0 := _chunk_uv_from_local_pre(face_i, l0, uvs)
+					var uv1 := _chunk_uv_from_local_pre(face_i, l1, uvs)
+					var uv2 := _chunk_uv_from_local_pre(face_i, l2, uvs)
+					var uv3 := _chunk_uv_from_local_pre(face_i, l3, uvs)
+
 
 
 					var dst := out_o
