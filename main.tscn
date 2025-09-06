@@ -1,4 +1,4 @@
-[gd_scene load_steps=18 format=3 uid="uid://4uib1b3po1x5"]
+[gd_scene load_steps=19 format=3 uid="uid://4uib1b3po1x5"]
 
 [ext_resource type="Script" uid="uid://cah10o7w7kcc1" path="res://main.gd" id="1_7mycd"]
 [ext_resource type="PackedScene" uid="uid://cp3iojl7e0c7o" path="res://src/player/FPSController.tscn" id="1_ig7tw"]
@@ -22,6 +22,9 @@ background_mode = 2
 sky = SubResource("Sky_h2yge")
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_kek77"]
+shader = ExtResource("6_5vw27")
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_dg77c"]
 shader = ExtResource("6_5vw27")
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_efxa6"]
@@ -100,6 +103,7 @@ theme_override_font_sizes/font_size = 31
 text = "+"
 
 [node name="FPSLabel" type="Label" parent="UI"]
+material = SubResource("ShaderMaterial_dg77c")
 offset_right = 40.0
 offset_bottom = 23.0
 theme_override_font_sizes/font_size = 32

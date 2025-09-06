@@ -42,7 +42,7 @@ var micro_noise  := FastNoiseLite.new()       # micro smoothing (terrain & canop
 var tick_noise   := FastNoiseLite.new()       # replaces RNG in world ticks
 
 # ---- Mesh cache for instant revisits ----
-const MESH_CACHE_LIMIT := 256
+const MESH_CACHE_LIMIT := 80
 var _mesh_cache := {}                 # Dictionary<Vector3i, Dictionary]
 var _mesh_lru: Array[Vector3i] = []
 
