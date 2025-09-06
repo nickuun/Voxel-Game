@@ -68,7 +68,7 @@ var _chunk_pool: Array[Chunk] = []					# recycled chunks
 
 # ---- Threaded generation & caching ----
 const CACHE_LIMIT := 256                          # how many chunk datas to keep
-const APPLY_GEN_BUDGET_PER_FRAME := 1             # apply N generated results / frame
+const APPLY_GEN_BUDGET_PER_FRAME := 2             # apply N generated results / frame
 
 var _chunk_cache := {}                            # Dictionary<Vector3i, Dictionary snapshot]
 var _cache_lru: Array[Vector3i] = []              # most-recent-first positions
@@ -277,6 +277,7 @@ func _drain_beautify_queue(max_count:int) -> void:
 			continue
 		# Apply beautify on main thread, then rebuild off-thread (old mesh stays visible)
 		_seed_micro_slopes_terrain(c)
+		#_decorate_tree_with_notches(c)
 		# _seed_micro_slopes_leaves(c)  # optional
 		# Re-decorate canopies if you like (safe; idempotent-ish)
 		# NOTE: if you want exact same notches as gen-worker found, pass the saved tree list.
@@ -1605,12 +1606,9 @@ func _drain_gen_results(max_count: int) -> void:
 			if not _beautify_queue.has(c):
 				_beautify_queue.append(c)
 		else:
-			# out of ring: do the full beautify before meshing
-			_seed_micro_slopes_terrain(c)
-			# _seed_micro_slopes_leaves(c)  # optional
-			for t in r["trees"]:
-				_decorate_tree_with_notches(c, t["at"], int(t["height"]))
 			_start_mesh_task(c)
+			if not _beautify_queue.has(c):
+				_beautify_queue.append(c)
 
 
 func _start_gen_task(c: Chunk) -> void:
@@ -1960,55 +1958,69 @@ func _place_tree_deterministic(c:Chunk, at:Vector3i, height:int, wx:int, wz:int)
 # Micro smoothing (terrain/canopy) — unchanged logic, deterministic gates
 # =========================================================
 func _seed_micro_slopes_terrain(c:Chunk) -> void:
-	var base_x:int = c.chunk_pos.x * CX
-	var base_z:int = c.chunk_pos.z * CZ
+	var CXv:int = Chunk.CX
+	var CYv:int = Chunk.CY
+	var CZv:int = Chunk.CZ
 
-	for x in CX:
-		for z in CZ:
-			var y0:int = _top_terrain_y(c, x, z)
-			if y0 < 0: continue
+	var base_x:int = c.chunk_pos.x * CXv
+	var base_z:int = c.chunk_pos.z * CZv
 
-			var id0:int = c.get_block(Vector3i(x, y0, z))
-			if not _is_terrain(id0): continue
+	var blocks:Array = c.blocks
+	var hm:PackedInt32Array = c.heightmap_top_solid
 
-			var gate_val:float = micro_noise.get_noise_2d(base_x + x, base_z + z)
-			if gate_val < MICRO_TERRAIN_GATE: continue
+	var idx:int
+	var y0:int
+	var id0:int
+	var lp_above:Vector3i
+	var placed:bool
+	var gate_val:float
 
-			var lp_above := Vector3i(x, y0 + 1, z)
-			if lp_above.y >= CY: continue
-			if c.get_block(lp_above) != BlockDB.BlockId.AIR: continue
+	for x in CXv:
+		for z in CZv:
+			idx = x * CZv + z
+			y0 = hm[idx]
+			if y0 < 0:
+				continue
 
-			var placed := false
-			# +X higher
-			if x + 1 < CX:
-				var yx := _top_terrain_y(c, x + 1, z)
-				if yx >= 0 and (yx - y0) == 1:
-					c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 0), id0)
-					c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 1), id0)
-					placed = true
-			# -X higher
-			if x - 1 >= 0:
-				var yxm1 := _top_terrain_y(c, x - 1, z)
-				if yxm1 >= 0 and (yxm1 - y0) == 1:
-					c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 0), id0)
-					c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 1), id0)
-					placed = true
-			# +Z higher
-			if z + 1 < CZ:
-				var yz := _top_terrain_y(c, x, z + 1)
-				if yz >= 0 and (yz - y0) == 1:
-					c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 1), id0)
-					c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 1), id0)
-					placed = true
-			# -Z higher
-			if z - 1 >= 0:
-				var yzm1 := _top_terrain_y(c, x, z - 1)
-				if yzm1 >= 0 and (yzm1 - y0) == 1:
-					c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 0), id0)
-					c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 0), id0)
-					placed = true
+			id0 = blocks[x][y0][z]
+			if not _is_terrain(id0):
+				continue
 
-			if placed: c.dirty = true
+			gate_val = micro_noise.get_noise_2d(base_x + x, base_z + z)
+			if gate_val < MICRO_TERRAIN_GATE:
+				continue
+
+			lp_above = Vector3i(x, y0 + 1, z)
+			if lp_above.y >= CYv:
+				continue
+			if blocks[lp_above.x][lp_above.y][lp_above.z] != BlockDB.BlockId.AIR:
+				continue
+
+			placed = false
+
+			# Use heightmap neighbors (O(1)) instead of scanning
+			if x + 1 < CXv and (hm[(x + 1) * CZv + z] - y0) == 1:
+				c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 0), id0)
+				c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 1), id0)
+				placed = true
+
+			if x - 1 >= 0 and (hm[(x - 1) * CZv + z] - y0) == 1:
+				c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 0), id0)
+				c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 1), id0)
+				placed = true
+
+			if z + 1 < CZv and (hm[x * CZv + (z + 1)] - y0) == 1:
+				c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 1), id0)
+				c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 1), id0)
+				placed = true
+
+			if z - 1 >= 0 and (hm[x * CZv + (z - 1)] - y0) == 1:
+				c.set_micro_sub(lp_above, Chunk._sub_index(0, 0, 0), id0)
+				c.set_micro_sub(lp_above, Chunk._sub_index(1, 0, 0), id0)
+				placed = true
+
+			if placed:
+				c.dirty = true
 			
 func _seed_micro_slopes_leaves(c:Chunk) -> void:
 	var base_x:int = c.chunk_pos.x * CX
