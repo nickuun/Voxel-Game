@@ -42,7 +42,9 @@ var micro_noise  := FastNoiseLite.new()       # micro smoothing (terrain & canop
 var tick_noise   := FastNoiseLite.new()       # replaces RNG in world ticks
 
 # ---- Mesh cache for instant revisits ----
-const MESH_CACHE_LIMIT := 80
+const MESH_CACHE_STORE_MESH: bool = false
+const MESH_CACHE_STORE_SHAPE: bool = false
+const MESH_CACHE_LIMIT := 48
 var _mesh_cache := {}                 # Dictionary<Vector3i, Dictionary]
 var _mesh_lru: Array[Vector3i] = []
 
@@ -1083,10 +1085,14 @@ func _mesh_cache_touch(cpos: Vector3i) -> void:
 	_mesh_lru.push_front(cpos)
 
 func _mesh_cache_put(cpos: Vector3i, snap: Dictionary) -> void:
+	if not MESH_CACHE_STORE_MESH and snap.has("mesh"):
+		snap.erase("mesh")
+	if not MESH_CACHE_STORE_SHAPE and snap.has("shape"):
+		snap.erase("shape")
 	_mesh_cache[cpos] = snap
 	_mesh_cache_touch(cpos)
 	while _mesh_lru.size() > MESH_CACHE_LIMIT:
-		var old = _mesh_lru.pop_back()
+		var old: Vector3i = _mesh_lru.pop_back()
 		_mesh_cache.erase(old)
 
 func _mesh_cache_try_restore(c: Chunk) -> bool:

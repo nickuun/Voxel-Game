@@ -39,6 +39,8 @@ var micro_section_counts: PackedInt32Array = PackedInt32Array()
 var micro := {}  # Dictionary<Vector3i, PackedInt32Array]
 
 func _ready():
+	
+	
 	add_child(mesh_instance)
 	add_child(collider)
 	collider.add_child(collision_shape)
@@ -578,11 +580,43 @@ func snapshot_data() -> Dictionary:
 	return {"blocks": blocks_copy, "heightmap": hm, "micro": micro_copy}
 
 func apply_snapshot(snap: Dictionary) -> void:
-	blocks = snap["blocks"]
-	heightmap_top_solid = snap["heightmap"]
-	micro = snap["micro"]
+	# blocks (required)
+	if not snap.has("blocks"):
+		push_warning("apply_snapshot: snapshot missing 'blocks'; skipping.")
+		return
+	var blocks_in: Array = snap["blocks"]
+	blocks = blocks_in
+
+	# heightmap (optional but expected)
+	var hm_any = snap.get("heightmap", PackedInt32Array())
+	var hm: PackedInt32Array
+	if typeof(hm_any) == TYPE_PACKED_INT32_ARRAY:
+		hm = hm_any
+	else:
+		hm = PackedInt32Array()
+	if hm.size() != CX * CZ:
+		var fixed := PackedInt32Array()
+		fixed.resize(CX * CZ)
+		for i in fixed.size():
+			var v: int = -1
+			if i < hm.size():
+				v = hm[i]
+			fixed[i] = v
+		heightmap_top_solid = fixed
+	else:
+		heightmap_top_solid = hm
+
+	# micro (optional)
+	var micro_any = snap.get("micro", {})
+	var micro_dict: Dictionary = {}
+	if typeof(micro_any) == TYPE_DICTIONARY:
+		micro_dict = micro_any
+	micro = micro_dict
 
 	# mark everything dirty
+	if section_dirty.size() != SECTION_COUNT:
+		section_dirty = PackedByteArray()
+		section_dirty.resize(SECTION_COUNT)
 	for s in SECTION_COUNT:
 		section_dirty[s] = 1
 	dirty = true
@@ -622,13 +656,28 @@ func snapshot_mesh_and_data() -> Dictionary:
 	}
 
 func apply_snapshot_with_mesh(snap: Dictionary) -> void:
-	blocks = snap["blocks"]
-	heightmap_top_solid = snap["heightmap"]
-	micro = snap["micro"]
-	mesh_instance.mesh = snap.get("mesh", null)
-	collision_shape.shape = snap.get("shape", null)
+	blocks = snap.get("blocks", [])
+	heightmap_top_solid = snap.get("heightmap", PackedInt32Array())
+	var micro_any = snap.get("micro", {})
+	if typeof(micro_any) == TYPE_DICTIONARY:
+		micro = micro_any
+	else:
+		micro = {}
 
-	# Mark clean so we DON’T rebuild on respawn.
+	var m = snap.get("mesh", null)
+	var sh = snap.get("shape", null)
+	if m != null:
+		mesh_instance.mesh = m
+	else:
+		mesh_instance.mesh = null
+	if sh != null:
+		collision_shape.shape = sh
+	else:
+		collision_shape.shape = null
+
+	if section_dirty.size() != SECTION_COUNT:
+		section_dirty = PackedByteArray()
+		section_dirty.resize(SECTION_COUNT)
 	for s in SECTION_COUNT:
 		section_dirty[s] = 0
 	dirty = false

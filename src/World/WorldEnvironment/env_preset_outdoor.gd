@@ -1,11 +1,11 @@
 # res://env_sunny_polish.gd
 extends WorldEnvironment
 
-@export var exposure: float = 1.08         # a hair brighter than neutral
+@export var exposure: float = 1.02         # a hair brighter than neutral
 @export var white_point: float = 6.0       # ACES sweet spot
 @export var sky_brightness: float = 1.6    # slightly lower so sun matters
 
-@export var ambient_energy: float = 0.60   # lower ambient => more sun/shadow contrast
+@export var ambient_energy: float = 0.50   # lower ambient => more sun/shadow contrast
 @export var ambient_from_sky: float = 0.85 # 0..1, how much ambient comes from sky
 
 # Subtle grounding shadows
@@ -25,7 +25,7 @@ extends WorldEnvironment
 @export var glow_intensity := 0.42
 @export var glow_thresh := 1.18
 @export var saturation := 1.14
-@export var contrast := 1.06
+@export var contrast := 1.26
 
 func _ready() -> void:
 	if environment == null:
