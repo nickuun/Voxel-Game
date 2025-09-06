@@ -220,21 +220,21 @@ func get_block(local:Vector3i) -> int:
 
 func _uv_from_local(face_i:int, local:Vector3, tile:int) -> Vector2:
 	var uvs := BlockDB.tile_uvs(tile)     # [TL, TR, BR, BL]
-	var u0 := uvs[0].x; var v0 := uvs[0].y
-	var u1 := uvs[2].x; var v1 := uvs[2].y
-
-	var s := 0.0  # horizontal 0..1
-	var t := 0.0  # vertical   0..1 (t=0 is top of the image)
-
+	var u0 := uvs[0].x
+	var v0 := uvs[0].y
+	var u1 := uvs[2].x
+	var v1 := uvs[2].y
+	var s := 0.0
+	var t := 0.0
 	match face_i:
-		0: s = local.z;           t = 1.0 - local.y      # +X
-		1: s = 1.0 - local.z;     t = 1.0 - local.y      # -X
-		2: s = local.x;           t = 1.0 - local.z      # +Y (top)
-		3: s = local.x;           t = local.z            # -Y (bottom)
-		4: s = local.x;           t = 1.0 - local.y      # +Z
-		5: s = 1.0 - local.x;     t = 1.0 - local.y      # -Z
-
+		0: s = local.z;           t = 1.0 - local.y   # +X
+		1: s = 1.0 - local.z;     t = 1.0 - local.y   # -X
+		2: s = local.x;           t = 1.0 - local.z   # +Y
+		3: s = local.x;           t = local.z         # -Y
+		4: s = local.x;           t = 1.0 - local.y   # +Z
+		5: s = 1.0 - local.x;     t = local.y         # -Z  (flipped t)
 	return Vector2(lerpf(u0, u1, s), lerpf(v0, v1, t))
+
 	
 func rebuild_mesh() -> void:
 	if not dirty:

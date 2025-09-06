@@ -26,8 +26,8 @@ var chunks := {}                              # Dictionary<Vector3i, Chunk]
 var _tick_accum := 0.0
 var _tick_phase := 0
 
-const COLLISION_RADIUS: int = 2						# chunks near player that get colliders
-const TICK_CHUNK_RADIUS: int = 3					# chunks near player that tick simulation
+const COLLISION_RADIUS: int = 1						# chunks near player that get colliders
+const TICK_CHUNK_RADIUS: int = 0					# chunks near player that tick simulation
 const SPAWN_BUDGET_PER_FRAME: int = 1				# spawn at most N new chunk nodes / frame
 const GEN_BUDGET_PER_FRAME: int = 1					# generate block data for at most N chunks / frame
 # BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
@@ -42,7 +42,7 @@ var micro_noise  := FastNoiseLite.new()       # micro smoothing (terrain & canop
 var tick_noise   := FastNoiseLite.new()       # replaces RNG in world ticks
 
 # ---- Mesh cache for instant revisits ----
-const MESH_CACHE_STORE_MESH: bool = false
+const MESH_CACHE_STORE_MESH: bool = true
 const MESH_CACHE_STORE_SHAPE: bool = false
 const MESH_CACHE_LIMIT := 48
 var _mesh_cache := {}                 # Dictionary<Vector3i, Dictionary]
@@ -102,11 +102,89 @@ var MAT_TRANS: StandardMaterial3D
 const HIDE_DIM := 256  # adjust if your block IDs exceed 255
 var HIDE_LUT := PackedByteArray()
 
-const MESH_TASK_CONCURRENCY := 3  # 0 = unlimited
+const MESH_TASK_CONCURRENCY := 4  # 0 = unlimited
 const COLLIDER_BUILD_BUDGET_PER_FRAME: int = 1
 
 var _collider_queue: Array[Chunk] = []
 var _collider_enqueued := {}   # Dictionary<Chunk, bool>
+
+const URGENT_RADIUS:int = RENDER_RADIUS          # chunks that must never be missing
+const URGENT_SPAWN:int = 3
+const URGENT_GEN:int = 3
+const URGENT_MESH_APPLY:int = 2
+
+var _last_seen_frame := {}  # Dictionary<Vector3i,int]
+
+func _nudge_stalled_near() -> void:
+	var frame:int = Engine.get_frames_drawn()
+	var center: Vector3i = _player_chunk()
+	for cpos in chunks.keys():
+		var cp: Vector3i = cpos
+		var dx:int = abs(cp.x - center.x)
+		var dz:int = abs(cp.z - center.z)
+		if dx > URGENT_RADIUS or dz > URGENT_RADIUS:
+			continue
+		var c: Chunk = chunks[cp]
+		if c == null or not is_instance_valid(c) or c.pending_kill:
+			continue
+
+		var ready_mesh:bool = c.mesh_instance.mesh != null and c.mesh_instance.mesh.get_surface_count() > 0
+		if not ready_mesh:
+			var last:int = int(_last_seen_frame.get(cp, 0))
+			if frame - last > 120:       # ~2 seconds @60fps
+				# poke both queues
+				if not _gen_tasks.has(cp):
+					_gen_queue.push_front(c)
+				if not _mesh_tasks.has(cp):
+					_rebuild_queue.push_front(c)
+				_last_seen_frame[cp] = frame
+			else:
+				_last_seen_frame[cp] = frame
+
+
+func _ensure_near_ring_filled() -> void:
+	var center: Vector3i = _player_chunk()
+	var missing_count:int = 0
+
+	for dz in range(-URGENT_RADIUS, URGENT_RADIUS + 1):
+		for dx in range(-URGENT_RADIUS, URGENT_RADIUS + 1):
+			var cpos: Vector3i = Vector3i(center.x + dx, 0, center.z + dz)
+
+			# 1) hard-spawn if absent
+			if not chunks.has(cpos):
+				var c: Chunk = _obtain_chunk()
+				c.position = Vector3(cpos.x * CX, 0.0, cpos.z * CZ)
+				c.reuse_setup(cpos, atlas)
+				chunks[cpos] = c
+				# put gen at the very front
+				_gen_queue.push_front(c)
+				missing_count += 1
+				continue
+
+			# 2) if spawned but has no block data yet → make sure gen is queued
+			var ch: Chunk = chunks[cpos]
+			if ch == null or not is_instance_valid(ch) or ch.pending_kill:
+				continue
+
+			# empty blocks = never generated
+			var needs_gen: bool = ch.blocks.size() == 0 or (ch.blocks[0] as Array).size() == 0
+			if needs_gen and not _gen_tasks.has(cpos):
+				_gen_queue.push_front(ch)
+				missing_count += 1
+
+			# 3) has blocks but no mesh yet → ensure rebuild is at front
+			if ch.blocks.size() > 0:
+				var mesh_null: bool = ch.mesh_instance.mesh == null or ch.mesh_instance.mesh.get_surface_count() == 0
+				if mesh_null and not _mesh_tasks.has(cpos):
+					_rebuild_queue.push_front(ch)
+					missing_count += 1
+
+	# temporarily boost budgets if anything urgent is missing
+	if missing_count > 0:
+		_drain_spawn_queue(URGENT_SPAWN)
+		_drain_gen_queue(URGENT_GEN)
+		_drain_mesh_results(URGENT_MESH_APPLY)
+
 
 # =========================================================
 # Lifecycle
@@ -232,6 +310,10 @@ func _process(dt: float) -> void:
 		_tick_phase += 1
 
 	_update_chunks_around_player()
+	
+	#_ensure_near_ring_filled() 
+	#_nudge_stalled_near() these tank fps, only needed if chunks were not saved/ generated correctly. Symptom treatment, i.e. sub optimal.
+	
 	_drain_spawn_queue(SPAWN_BUDGET_PER_FRAME)
 	_drain_gen_queue(GEN_BUDGET_PER_FRAME)
 	_drain_rebuild_queue(BUILD_BUDGET_PER_FRAME)
@@ -377,6 +459,317 @@ func _drain_mesh_results(max_count:int) -> void:
 #  - current block is opaque (not transparent, not AIR)
 #  - block above is AIR or transparent (face visible)
 # Greedy topo layer at fixed y (opaque-only, +Y faces).
+
+func _build_bottom_mask(CX:int, CY:int, CZ:int, blocks:Array, y:int) -> Array:
+	var mask := []
+	mask.resize(CX)
+	for x in CX:
+		var row := PackedInt32Array()
+		row.resize(CZ)
+		for z in CZ:
+			row[z] = -1
+			var id:int = blocks[x][y][z]
+			if id == BlockDB.BlockId.AIR:
+				continue
+			if BlockDB.is_transparent(id):
+				continue
+			var below_id:int = BlockDB.BlockId.AIR
+			if y - 1 >= 0:
+				below_id = blocks[x][y - 1][z]
+			if _face_hidden_fast(id, below_id):
+				continue
+			row[z] = BlockDB.get_face_tile(id, 3)  # -Y
+		mask[x] = row
+	return mask
+
+func _emit_bottom_rects(mask:Array, y:int, dst_opaque:Dictionary) -> void:
+	var CXv:int = mask.size()
+	if CXv == 0:
+		return
+	var CZv:int = (mask[0] as PackedInt32Array).size()
+	var visited := []
+	visited.resize(CXv)
+	for x in CXv:
+		var rowb := PackedByteArray()
+		rowb.resize(CZv)
+		for z in CZv:
+			rowb[z] = 0
+		visited[x] = rowb
+
+	var face_i:int = 3
+	var nrm := Vector3(0, -1, 0)
+	var locals := [Vector3(0,0,0), Vector3(1,0,0), Vector3(1,0,1), Vector3(0,0,1)]
+
+	var x:int = 0
+	while x < CXv:
+		var z:int = 0
+		while z < CZv:
+			var tile:int = (mask[x] as PackedInt32Array)[z]
+			if visited[x][z] == 0 and tile >= 0:
+				var w:int = 1
+				while (x + w) < CXv and visited[x + w][z] == 0 and (mask[x + w] as PackedInt32Array)[z] == tile:
+					w += 1
+				var h:int = 1
+				while (z + h) < CZv:
+					var ok:bool = true
+					for xx in range(x, x + w):
+						if visited[xx][z + h] == 1 or (mask[xx] as PackedInt32Array)[z + h] != tile:
+							ok = false
+							break
+					if not ok:
+						break
+					h += 1
+				for xx in range(x, x + w):
+					for zz in range(z, z + h):
+						visited[xx][zz] = 1
+
+				var v0 := Vector3(x,     y, z)
+				var v1 := Vector3(x + w, y, z)
+				var v2 := Vector3(x + w, y, z + h)
+				var v3 := Vector3(x,     y, z + h)
+
+				var uvs := BlockDB.tile_uvs(tile)
+				var uv0 := _chunk_uv_from_local_pre(face_i, locals[0], uvs)
+				var uv1 := _chunk_uv_from_local_pre(face_i, locals[1], uvs)
+				var uv2 := _chunk_uv_from_local_pre(face_i, locals[2], uvs)
+				var uv3 := _chunk_uv_from_local_pre(face_i, locals[3], uvs)
+				_push_quad(dst_opaque, [v0,v1,v2,v3], nrm, uv0, uv1, uv2, uv3)
+
+				z += h
+			else:
+				z += 1
+		x += 1
+
+func _build_x_plane_mask(CX:int, CY:int, CZ:int, blocks:Array, x:int, y0:int, y1:int, face_i:int) -> Array:
+	var H:int = y1 - y0 + 1
+	var mask := []
+	mask.resize(CZ)
+	for z in CZ:
+		var col := PackedInt32Array()
+		col.resize(H)
+		for i in H:
+			col[i] = -1
+			var y:int = y0 + i
+			var id:int = blocks[x][y][z]
+			if id == BlockDB.BlockId.AIR:
+				continue
+			if BlockDB.is_transparent(id):
+				continue
+			var nx:int = x + 1
+			if face_i == 1:
+				nx = x - 1
+			var neighbor_id:int = BlockDB.BlockId.AIR
+			if nx >= 0 and nx < CX:
+				neighbor_id = blocks[nx][y][z]
+			if _face_hidden_fast(id, neighbor_id):
+				continue
+			col[i] = BlockDB.get_face_tile(id, face_i)
+		mask[z] = col
+	return mask
+
+func _emit_x_plane_rects(mask:Array, x:int, y0:int, dst_opaque:Dictionary, face_i:int) -> void:
+	var CZv:int = mask.size()
+	if CZv == 0:
+		return
+	var H:int = (mask[0] as PackedInt32Array).size()
+	var visited := []
+	visited.resize(CZv)
+	for z in CZv:
+		var colv := PackedByteArray()
+		colv.resize(H)
+		for i in H:
+			colv[i] = 0
+		visited[z] = colv
+
+	var nrm := Vector3(1,0,0)
+	if face_i == 1:
+		nrm = Vector3(-1,0,0)
+	var x_plane:int = x + 1
+	if face_i == 1:
+		x_plane = x
+
+	var locals_px := [Vector3(1,0,0), Vector3(1,1,0), Vector3(1,1,1), Vector3(1,0,1)]
+	var locals_nx := [Vector3(0,0,1), Vector3(0,1,1), Vector3(0,1,0), Vector3(0,0,0)]
+
+	var z:int = 0
+	while z < CZv:
+		var i:int = 0
+		while i < H:
+			var tile:int = (mask[z] as PackedInt32Array)[i]
+			if visited[z][i] == 0 and tile >= 0:
+				var w:int = 1
+				while (z + w) < CZv and visited[z + w][i] == 0 and (mask[z + w] as PackedInt32Array)[i] == tile:
+					w += 1
+				var h:int = 1
+				while (i + h) < H:
+					var ok:bool = true
+					for zz in range(z, z + w):
+						if visited[zz][i + h] == 1 or (mask[zz] as PackedInt32Array)[i + h] != tile:
+							ok = false
+							break
+					if not ok:
+						break
+					h += 1
+				for zz in range(z, z + w):
+					for ii in range(i, i + h):
+						visited[zz][ii] = 1
+
+				var y_start:int = y0 + i
+				var y_end:int = y_start + h
+				var z_end:int = z + w
+
+				var v0:Vector3
+				var v1:Vector3
+				var v2:Vector3
+				var v3:Vector3
+				if face_i == 0:
+					v0 = Vector3(x_plane, y_start, z)
+					v1 = Vector3(x_plane, y_end,   z)
+					v2 = Vector3(x_plane, y_end,   z_end)
+					v3 = Vector3(x_plane, y_start, z_end)
+				else:
+					v0 = Vector3(x_plane, y_start, z_end)
+					v1 = Vector3(x_plane, y_end,   z_end)
+					v2 = Vector3(x_plane, y_end,   z)
+					v3 = Vector3(x_plane, y_start, z)
+
+				var uvs := BlockDB.tile_uvs(tile)
+				var uv0:Vector2
+				var uv1:Vector2
+				var uv2:Vector2
+				var uv3:Vector2
+				if face_i == 0:
+					uv0 = _chunk_uv_from_local_pre(0, locals_px[0], uvs)
+					uv1 = _chunk_uv_from_local_pre(0, locals_px[1], uvs)
+					uv2 = _chunk_uv_from_local_pre(0, locals_px[2], uvs)
+					uv3 = _chunk_uv_from_local_pre(0, locals_px[3], uvs)
+				else:
+					uv0 = _chunk_uv_from_local_pre(1, locals_nx[0], uvs)
+					uv1 = _chunk_uv_from_local_pre(1, locals_nx[1], uvs)
+					uv2 = _chunk_uv_from_local_pre(1, locals_nx[2], uvs)
+					uv3 = _chunk_uv_from_local_pre(1, locals_nx[3], uvs)
+
+				_push_quad(dst_opaque, [v0,v1,v2,v3], nrm, uv0, uv1, uv2, uv3)
+				i += h
+			else:
+				i += 1
+		z += 1
+
+func _build_z_plane_mask(CX:int, CY:int, CZ:int, blocks:Array, z:int, y0:int, y1:int, face_i:int) -> Array:
+	var H:int = y1 - y0 + 1
+	var mask := []
+	mask.resize(CX)
+	for x in CX:
+		var col := PackedInt32Array()
+		col.resize(H)
+		for i in H:
+			col[i] = -1
+			var y:int = y0 + i
+			var id:int = blocks[x][y][z]
+			if id == BlockDB.BlockId.AIR:
+				continue
+			if BlockDB.is_transparent(id):
+				continue
+			var nz:int = z + 1
+			if face_i == 5:
+				nz = z - 1
+			var neighbor_id:int = BlockDB.BlockId.AIR
+			if nz >= 0 and nz < CZ:
+				neighbor_id = blocks[x][y][nz]
+			if _face_hidden_fast(id, neighbor_id):
+				continue
+			col[i] = BlockDB.get_face_tile(id, face_i)
+		mask[x] = col
+	return mask
+
+func _emit_z_plane_rects(mask:Array, z:int, y0:int, dst_opaque:Dictionary, face_i:int) -> void:
+	var CXv:int = mask.size()
+	if CXv == 0:
+		return
+	var H:int = (mask[0] as PackedInt32Array).size()
+	var visited := []
+	visited.resize(CXv)
+	for x in CXv:
+		var colv := PackedByteArray()
+		colv.resize(H)
+		for i in H:
+			colv[i] = 0
+		visited[x] = colv
+
+	var nrm := Vector3(0,0,1)
+	if face_i == 5:
+		nrm = Vector3(0,0,-1)
+	var z_plane:int = z + 1
+	if face_i == 5:
+		z_plane = z
+
+	var locals_pz := [Vector3(0,0,1), Vector3(1,0,1), Vector3(1,1,1), Vector3(0,1,1)]
+	var locals_nz := [Vector3(0,1,0), Vector3(1,1,0), Vector3(1,0,0), Vector3(0,0,0)]
+
+	var x:int = 0
+	while x < CXv:
+		var i:int = 0
+		while i < H:
+			var tile:int = (mask[x] as PackedInt32Array)[i]
+			if visited[x][i] == 0 and tile >= 0:
+				var w:int = 1
+				while (x + w) < CXv and visited[x + w][i] == 0 and (mask[x + w] as PackedInt32Array)[i] == tile:
+					w += 1
+				var h:int = 1
+				while (i + h) < H:
+					var ok:bool = true
+					for xx in range(x, x + w):
+						if visited[xx][i + h] == 1 or (mask[xx] as PackedInt32Array)[i + h] != tile:
+							ok = false
+							break
+					if not ok:
+						break
+					h += 1
+				for xx in range(x, x + w):
+					for ii in range(i, i + h):
+						visited[xx][ii] = 1
+
+				var y_start:int = y0 + i
+				var y_end:int = y_start + h
+				var x_end:int = x + w
+
+				var v0:Vector3
+				var v1:Vector3
+				var v2:Vector3
+				var v3:Vector3
+				if face_i == 4:
+					v0 = Vector3(x,     y_start, z_plane)
+					v1 = Vector3(x_end, y_start, z_plane)
+					v2 = Vector3(x_end, y_end,   z_plane)
+					v3 = Vector3(x,     y_end,   z_plane)
+				else:
+					v0 = Vector3(x_end, y_start, z_plane)
+					v1 = Vector3(x,     y_start, z_plane)
+					v2 = Vector3(x,     y_end,   z_plane)
+					v3 = Vector3(x_end, y_end,   z_plane)
+
+				var uvs := BlockDB.tile_uvs(tile)
+				var uv0:Vector2
+				var uv1:Vector2
+				var uv2:Vector2
+				var uv3:Vector2
+				if face_i == 4:
+					uv0 = _chunk_uv_from_local_pre(4, locals_pz[0], uvs)
+					uv1 = _chunk_uv_from_local_pre(4, locals_pz[1], uvs)
+					uv2 = _chunk_uv_from_local_pre(4, locals_pz[2], uvs)
+					uv3 = _chunk_uv_from_local_pre(4, locals_pz[3], uvs)
+				else:
+					uv0 = _chunk_uv_from_local_pre(5, locals_nz[0], uvs)
+					uv1 = _chunk_uv_from_local_pre(5, locals_nz[1], uvs)
+					uv2 = _chunk_uv_from_local_pre(5, locals_nz[2], uvs)
+					uv3 = _chunk_uv_from_local_pre(5, locals_nz[3], uvs)
+
+				_push_quad(dst_opaque, [v0,v1,v2,v3], nrm, uv0, uv1, uv2, uv3)
+				i += h
+			else:
+				i += 1
+		x += 1
+
 
 func _emit_greedy_tops_layer(CX:int, CY:int, CZ:int, blocks:Array, y:int, dst_opaque:Dictionary) -> void:
 	# Build a mask of tiles for this layer; -1 means NO FACE.
@@ -681,7 +1074,28 @@ func _mesh_worker(snap: Dictionary) -> void:
 					_emit_greedy_tops_strips(mask, y, dst_opaque)   # simple & robust
 				else:
 					_emit_greedy_tops_rects(mask, y, dst_opaque)    # 2D rectangles
+		
+		# --- Greedy -Y (opaque) ---
+		if GREEDY_BOTTOMS:
+			for y in range(y0, y1 + 1):
+				var bm := _build_bottom_mask(CX, CY, CZ, blocks, y)
+				_emit_bottom_rects(bm, y, dst_opaque)
 
+		# --- Greedy sides (opaque): ±X and ±Z as 2D rectangles in Y with Z/X ---
+		if GREEDY_SIDES:
+			for x_ in CX:
+				var mxp := _build_x_plane_mask(CX, CY, CZ, blocks, x_, y0, y1, 0)  # +X
+				_emit_x_plane_rects(mxp, x_, y0, dst_opaque, 0)
+			for x_ in CX:
+				var mxn := _build_x_plane_mask(CX, CY, CZ, blocks, x_, y0, y1, 1)  # -X
+				_emit_x_plane_rects(mxn, x_, y0, dst_opaque, 1)
+			for z_ in CZ:
+				var mzp := _build_z_plane_mask(CX, CY, CZ, blocks, z_, y0, y1, 4)  # +Z
+				_emit_z_plane_rects(mzp, z_, y0, dst_opaque, 4)
+			for z_ in CZ:
+				var mzn := _build_z_plane_mask(CX, CY, CZ, blocks, z_, y0, y1, 5)  # -Z
+				_emit_z_plane_rects(mzn, z_, y0, dst_opaque, 5)
+		
 		# 2) Regular emission for everything else:
 		#    - all transparent blocks (all faces)
 		#    - all opaque faces EXCEPT +Y (because greedy handled those when enabled)
@@ -692,10 +1106,20 @@ func _mesh_worker(snap: Dictionary) -> void:
 					if id == BlockDB.BlockId.AIR:
 						continue
 					var is_trans := BlockDB.is_transparent(id)
+					
+					
 
 					for face_i in 6:
 						if GREEDY_TOPS_MODE > 0 and (face_i == 2) and not is_trans:
 							continue  # skip opaque +Y (greedy already emitted)
+						
+						if not is_trans:
+							if GREEDY_TOPS_MODE > 0 and face_i == 2:
+								continue
+							if GREEDY_BOTTOMS and face_i == 3:
+								continue
+							if GREEDY_SIDES and (face_i == 0 or face_i == 1 or face_i == 4 or face_i == 5):
+								continue
 
 						var nrm = faces[face_i]
 						var nx := x + int(nrm.x); var ny := y + int(nrm.y); var nz := z + int(nrm.z)
@@ -775,13 +1199,14 @@ func _chunk_uv_from_local_pre(face_i:int, local:Vector3, uvs:Array) -> Vector2:
 	var s := 0.0
 	var t := 0.0
 	match face_i:
-		0: s = local.z;           t = 1.0 - local.y
-		1: s = 1.0 - local.z;     t = 1.0 - local.y
-		2: s = local.x;           t = 1.0 - local.z
-		3: s = local.x;           t = local.z
-		4: s = local.x;           t = 1.0 - local.y
-		5: s = 1.0 - local.x;     t = 1.0 - local.y
+		0: s = local.z;           t = 1.0 - local.y   # +X
+		1: s = 1.0 - local.z;     t = 1.0 - local.y   # -X
+		2: s = local.x;           t = 1.0 - local.z   # +Y (top)
+		3: s = local.x;           t = local.z         # -Y (bottom)
+		4: s = local.x;           t = 1.0 - local.y   # +Z
+		5: s = 1.0 - local.x;     t = local.y         # -Z  (flipped t)
 	return Vector2(lerpf(u0, u1, s), lerpf(v0, v1, t))
+
 
 # --- helpers used by the worker ---
 
@@ -804,7 +1229,7 @@ func _chunk_uv_from_local(face_i:int, local:Vector3, tile:int) -> Vector2:
 		2: s = local.x;           t = 1.0 - local.z
 		3: s = local.x;           t = local.z
 		4: s = local.x;           t = 1.0 - local.y
-		5: s = 1.0 - local.x;     t = 1.0 - local.y
+		5: s = 1.0 - local.x;     t = local.y
 	return Vector2(lerpf(u0, u1, s), lerpf(v0, v1, t))
 	
 func _has(m:int,sx:int,sy:int,sz:int)->bool:
@@ -948,7 +1373,8 @@ func _set_collision_rings(center: Vector3i) -> void:
 			if c.collision_shape.shape == null:
 				var m = c.mesh_instance.mesh
 				if m != null and m.get_surface_count() > 0:
-					c._set_collision_after_mesh(m)  # immediate; no defer when near
+					_queue_collider_build(c)
+					#c._set_collision_after_mesh(m)  # immediate; no defer when near
 		else:
 			# Inside the middle band: keep whatever collider we have (hysteresis).
 			pass
@@ -1099,9 +1525,21 @@ func _mesh_cache_try_restore(c: Chunk) -> bool:
 	var cpos := c.chunk_pos
 	if not _mesh_cache.has(cpos):
 		return false
+
 	var snap: Dictionary = _mesh_cache[cpos]
-	c.apply_snapshot_with_mesh(snap)
 	_mesh_cache_touch(cpos)
+
+	if not snap.has("mesh"):
+		return false
+	var m = snap["mesh"]
+	if m == null:
+		return false
+	if not (m is ArrayMesh):
+		return false
+	if (m as ArrayMesh).get_surface_count() <= 0:
+		return false
+
+	c.apply_snapshot_with_mesh(snap)
 	return true
 
 
@@ -1820,7 +2258,8 @@ func break_notch_at_world(wpos: Vector3) -> int:
 
 	c.clear_micro_sub(lpos, s)
 	c.dirty = true
-	c.rebuild_mesh()
+	_queue_rebuild(c)
+	#c.rebuild_mesh()
 
 	var notch_item := BlockDB.notch_item_for_base(base_id)
 	return notch_item if notch_item != -1 else base_id
@@ -1882,7 +2321,8 @@ func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = V
 		return
 
 	c.set_micro_sub(lpos, s, base_id)
-	c.rebuild_mesh()
+	_queue_rebuild(c)
+	#c.rebuild_mesh()
 
 
 # =========================================================
