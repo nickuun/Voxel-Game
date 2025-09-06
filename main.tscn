@@ -53,6 +53,7 @@ light_energy = 3.0
 light_indirect_energy = 1.2
 light_angular_distance = 2.43
 shadow_enabled = true
+directional_shadow_mode = 0
 directional_shadow_blend_splits = true
 directional_shadow_max_distance = 300.0
 

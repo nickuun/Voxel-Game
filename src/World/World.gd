@@ -29,10 +29,10 @@ var _tick_phase := 0
 const COLLISION_RADIUS: int = 1						# chunks near player that get colliders
 const TICK_CHUNK_RADIUS: int = 0					# chunks near player that tick simulation
 const SPAWN_BUDGET_PER_FRAME: int = 1				# spawn at most N new chunk nodes / frame
-const GEN_BUDGET_PER_FRAME: int = 1					# generate block data for at most N chunks / frame
+const GEN_BUDGET_PER_FRAME: int = 3					# generate block data for at most N chunks / frame
 # BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
 const CHUNK_POOL_SIZE: int = 64						# simple pool upper bound
-const GEN_TASK_CONCURRENCY := 3 # optional cap
+const GEN_TASK_CONCURRENCY := 10 # optional cap
 
 # ---- Noises (deterministic) ----
 var height_noise := FastNoiseLite.new()       # terrain height
@@ -382,7 +382,7 @@ func _drain_mesh_results(max_count:int) -> void:
 	var applied := 0
 	var i := 0
 	var t0 := Time.get_ticks_usec()
-	const SLICE_US := 4000  # try 4000–6000 if 3000 is too tight
+	const SLICE_US := 8000  # try 4000–6000 if 3000 is too tight
 
 	while i < pulled.size() and applied < budget:
 		var r = pulled[i]
