@@ -121,6 +121,18 @@ const URGENT_MESH_APPLY:int = 2
 
 var _last_seen_frame := {}  # Dictionary<Vector3i,int]
 
+
+# ---- Biome & aux noises ----
+var biome_map        # Biomes.BiomeMap instance (created in _ready)
+
+var biome_seed := 24601
+
+var detail_noise := FastNoiseLite.new()   # small ripples / sub detail
+var variety_noise := FastNoiseLite.new()  # palette chooser
+var ridge_noise := FastNoiseLite.new()    # ledge lines for Peaks
+var patch_noise := FastNoiseLite.new()    # pools/blobs (dirt/stone in grass/desert)
+
+
 func _nudge_stalled_near() -> void:
 	var frame:int = Engine.get_frames_drawn()
 	var center: Vector3i = _player_chunk()
@@ -237,6 +249,35 @@ func _ready() -> void:
 	tick_noise.fractal_octaves = 1
 	tick_noise.frequency = 0.25
 	tick_noise.seed = 9001
+	
+	# Extra noises
+	detail_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	detail_noise.fractal_octaves = 2
+	detail_noise.frequency = 0.02
+	detail_noise.seed = height_noise.seed ^ 0x55AA
+
+	variety_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	variety_noise.fractal_octaves = 3
+	variety_noise.frequency = 0.08
+	variety_noise.seed = 424242
+
+	ridge_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	ridge_noise.fractal_octaves = 1
+	ridge_noise.frequency = 0.006
+	ridge_noise.seed = 0xFACE
+
+	patch_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	patch_noise.fractal_octaves = 2
+	patch_noise.frequency = 0.01
+	patch_noise.seed = 0xBEEF
+
+	# Biome map
+	var Biomes = preload("res://src/World/biomes/Biomes.gd")
+	biome_map = BiomeMap.new(biome_seed)
+	biome_map.add_biome(Biomes.RollingHills.new())
+	biome_map.add_biome(Biomes.Grasslands.new())
+	biome_map.add_biome(Biomes.Desert.new())
+	biome_map.add_biome(Biomes.Peaks.new())
 
 	# Player
 	if player_path != NodePath():
@@ -1655,7 +1696,13 @@ func _start_gen_task(c: Chunk) -> void:
 	var np := {
 		"height": {"type": height_noise.noise_type, "oct": height_noise.fractal_octaves, "freq": height_noise.frequency, "seed": height_noise.seed},
 		"tree":   {"type": tree_noise.noise_type,   "oct": tree_noise.fractal_octaves,   "freq": tree_noise.frequency,   "seed": tree_noise.seed},
-		"leaf":   {"type": leaf_noise.noise_type,   "oct": leaf_noise.fractal_octaves,   "freq": leaf_noise.frequency,   "seed": leaf_noise.seed}
+		"leaf":   {"type": leaf_noise.noise_type,   "oct": leaf_noise.fractal_octaves,   "freq": leaf_noise.frequency,   "seed": leaf_noise.seed},
+		"detail": {"type": detail_noise.noise_type, "oct": detail_noise.fractal_octaves, "freq": detail_noise.frequency, "seed": detail_noise.seed},
+		"variety":{"type": variety_noise.noise_type,"oct": variety_noise.fractal_octaves,"freq": variety_noise.frequency,"seed": variety_noise.seed},
+		"ridge":  {"type": ridge_noise.noise_type,  "oct": ridge_noise.fractal_octaves,  "freq": ridge_noise.frequency,  "seed": ridge_noise.seed},
+		"patch":  {"type": patch_noise.noise_type,  "oct": patch_noise.fractal_octaves,  "freq": patch_noise.frequency,  "seed": patch_noise.seed},
+
+		"biome":  {"seed": biome_seed} # for BiomeMap chooser/micro
 	}
 	var payload := {
 		"cpos": cpos,
@@ -1672,13 +1719,39 @@ func _make_noise(np: Dictionary) -> FastNoiseLite:
 	n.seed = np["seed"]
 	return n
 
+func _mk(np:Dictionary) -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	if np.has("type"): n.noise_type = np["type"]
+	if np.has("oct"):  n.fractal_octaves = np["oct"]
+	if np.has("freq"): n.frequency = np["freq"]
+	if np.has("seed"): n.seed = np["seed"]
+	return n
 func _gen_worker(payload: Dictionary) -> void:
-	# Recreate local noises (thread-safe)
 	var cpos: Vector3i = payload["cpos"]
 	var CX_: int = int(payload["CX"]); var CY_: int = int(payload["CY"]); var CZ_: int = int(payload["CZ"])
-	var hn := _make_noise(payload["noise"]["height"])
-	var tn := _make_noise(payload["noise"]["tree"])
-	var ln := _make_noise(payload["noise"]["leaf"])
+
+	# Rebuild noises from packed params
+
+
+	var N := {
+		"CX":CX_, "CY":CY_, "CZ":CZ_,
+		"height": _mk(payload["noise"]["height"]),
+		"tree":   _mk(payload["noise"]["tree"]),
+		"leaf":   _mk(payload["noise"]["leaf"]),
+		"detail": _mk(payload["noise"]["detail"]),
+		"variety":_mk(payload["noise"]["variety"]),
+		"ridge":  _mk(payload["noise"]["ridge"]),
+		"patch":  _mk(payload["noise"]["patch"]),
+		"snow_line": float(SURFACE_MAX) - 6.0 # simple snow cutoff for Peaks
+	}
+
+	# Local BiomeMap (thread-safe, no Nodes)
+	var Biomes = preload("res://src/World/biomes/Biomes.gd")
+	var bmap = BiomeMap.new(int(payload["noise"]["biome"]["seed"]))
+	bmap.add_biome(Biomes.RollingHills.new())
+	bmap.add_biome(Biomes.Grasslands.new())
+	bmap.add_biome(Biomes.Desert.new())
+	bmap.add_biome(Biomes.Peaks.new())
 
 	# Allocate arrays
 	var blocks: Array = []
@@ -1689,15 +1762,11 @@ func _gen_worker(payload: Dictionary) -> void:
 		for y in CY_:
 			var stack := []
 			stack.resize(CZ_)
-			for z in CZ_:
-				stack[z] = BlockDB.BlockId.AIR
+			for z in CZ_: stack[z] = BlockDB.BlockId.AIR
 			col[y] = stack
 		blocks[x] = col
 
-	var heightmap := PackedInt32Array()
-	heightmap.resize(CX_ * CZ_)
-
-	var trees: Array = []   # each: {"at": Vector3i, "height": int}
+	var heightmap := PackedInt32Array(); heightmap.resize(CX_ * CZ_)
 
 	var base_x := cpos.x * CX_
 	var base_z := cpos.z * CZ_
@@ -1707,49 +1776,17 @@ func _gen_worker(payload: Dictionary) -> void:
 			var wx := base_x + x
 			var wz := base_z + z
 
-			var h_f := remap(hn.get_noise_2d(wx, wz), -1.0, 1.0, float(SURFACE_MIN), float(SURFACE_MAX))
-			var h = clamp(int(round(h_f)), 1, CY_ - 2)
+			var biome = bmap.pick(wx, wz)
+			var h = biome.height(wx, wz, N, SURFACE_MIN, SURFACE_MAX)
+			h = clamp(h, 1, CY_ - 2)
 			heightmap[x * CZ_ + z] = h - 1
 
-			for y in range(0, h):
-				var id := BlockDB.BlockId.DIRT
-				if y == h - 1:
-					id = BlockDB.BlockId.GRASS
-				elif y < h - 10:
-					id = BlockDB.BlockId.STONE
-				blocks[x][y][z] = id
-
-			# Trees (no notches here; we'll decorate on main thread)
-			var place_val := 0.5 * (tn.get_noise_2d(wx, wz) + 1.0)
-			if place_val > 0.80:
-				var hval := 0.5 * (tn.get_noise_2d(wx + 12345, wz - 54321) + 1.0)
-				var t_height := 4 + int(round(hval * 2.0))
-				# require grass under trunk
-				if blocks[x][h - 1][z] == BlockDB.BlockId.GRASS:
-					# trunk
-					for i in t_height:
-						var py = h + i
-						if py >= CY_: break
-						blocks[x][py][z] = BlockDB.BlockId.LOG
-					# crown
-					var top_y = h + t_height
-					for dx in range(-2, 3):
-						for dy in range(-2, 2):
-							for dz in range(-2, 3):
-								var px := x + dx
-								var py = top_y + dy
-								var pz := z + dz
-								if px < 0 or px >= CX_ or py < 0 or py >= CY_ or pz < 0 or pz >= CZ_:
-									continue
-								var dist := Vector3(abs(dx), abs(dy) * 1.3, abs(dz)).length()
-								if dist <= 2.6:
-									var keep := 0.5 * (ln.get_noise_3d(float(wx + dx * 97), float(top_y + dy * 57), float(wz + dz * 131)) + 1.0)
-									if keep > 0.15 and blocks[px][py][pz] == BlockDB.BlockId.AIR:
-										blocks[px][py][pz] = BlockDB.BlockId.LEAVES
-					trees.append({"at": Vector3i(x, h, z), "height": t_height})
+			biome.fill_column(blocks, x, z, h, wx, wz, N)
+			# Decoration (trees, spikes, ledges) — still pure block writes
+			biome.decorate(blocks, x, z, h, wx, wz, N)
 
 	# publish result to main thread
-	var result := {"cpos": cpos, "blocks": blocks, "heightmap": heightmap, "trees": trees}
+	var result := {"cpos": cpos, "blocks": blocks, "heightmap": heightmap, "trees": []}
 	_gen_mutex.lock()
 	_gen_results.append(result)
 	_gen_mutex.unlock()
