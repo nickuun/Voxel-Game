@@ -28,6 +28,7 @@ var atlas: Texture2D
 var chunks := {}                              # Dictionary<Vector3i, Chunk]
 var _tick_accum := 0.0
 var _tick_phase := 0
+var edits: EditStore
 
 const COLLISION_RADIUS: int = 1						# chunks near player that get colliders
 const TICK_CHUNK_RADIUS: int = 0					# chunks near player that tick simulation
@@ -211,6 +212,7 @@ func _ready() -> void:
 	atlas = load(BlockDB.ATLAS_PATH)
 	BlockDB.configure_from_texture(atlas)
 	_build_hide_lut()
+	edits = EditStore.new()
 
 	MAT_OPAQUE = StandardMaterial3D.new()
 	MAT_OPAQUE.albedo_texture = atlas
@@ -524,23 +526,50 @@ func _drain_mesh_results(max_count:int) -> void:
 func _build_bottom_mask(CX:int, CY:int, CZ:int, blocks:Array, y:int) -> Array:
 	var mask := []
 	mask.resize(CX)
+
 	for x in CX:
 		var row := PackedInt32Array()
 		row.resize(CZ)
+
 		for z in CZ:
-			row[z] = -1
-			var id:int = blocks[x][y][z]
+			row[z] = -1  # default: no face
+
+			# ---- Robust bounds/sanity checks ----
+			if y < 0 or y >= CY:
+				continue
+			if x >= blocks.size():
+				continue
+			var col = blocks[x]
+			if typeof(col) != TYPE_ARRAY:
+				continue
+			if y >= (col as Array).size():
+				continue
+			var stack = (col as Array)[y]
+			if typeof(stack) != TYPE_ARRAY:
+				continue
+			if z >= (stack as Array).size():
+				continue
+
+			# ---- Safe reads begin here ----
+			var id:int = int((stack as Array)[z])
 			if id == BlockDB.BlockId.AIR:
 				continue
 			if BlockDB.is_transparent(id):
 				continue
+
 			var below_id:int = BlockDB.BlockId.AIR
-			if y - 1 >= 0:
-				below_id = blocks[x][y - 1][z]
+			if (y - 1) >= 0 and (y - 1) < (col as Array).size():
+				var below = (col as Array)[y - 1]
+				if typeof(below) == TYPE_ARRAY and z < (below as Array).size():
+					below_id = int((below as Array)[z])
+
 			if _face_hidden_fast(id, below_id):
 				continue
+
 			row[z] = BlockDB.get_face_tile(id, 3)  # -Y
+
 		mask[x] = row
+
 	return mask
 
 func _emit_bottom_rects(mask:Array, y:int, dst_opaque:Dictionary) -> void:
@@ -1517,12 +1546,14 @@ func _drain_spawn_queue(max_count: int) -> void:
 		if _mesh_cache_try_restore(c):
 			# Optional: still do micro terrain smoothing if your cache predates it.
 			# Otherwise, we’re done.
+			edits.apply_to_chunk(c)
 			continue
 
 
 		# Try restoring from cache; if hit, skip generation
 		if _try_restore_from_cache(c):
 			_seed_micro_slopes_terrain(c)
+			edits.apply_to_chunk(c)
 			_queue_rebuild(c)
 		else:
 			# Generation will be done on worker thread
@@ -1697,6 +1728,8 @@ func _drain_gen_results(max_count: int) -> void:
 		for s in c.SECTION_COUNT:
 			c.section_dirty[s] = 1
 		c.dirty = true
+		
+		edits.apply_to_chunk(c)
 
 		var dx = abs(c.chunk_pos.x - _player_chunk().x)
 		var dz = abs(c.chunk_pos.z - _player_chunk().z)
@@ -1933,8 +1966,11 @@ func edit_block_at_world(wpos: Vector3, id: int) -> void:
 
 	if not Chunk.index_in_bounds(lpos.x, lpos.y, lpos.z):
 		return
+	
+	
 
 	chunk.set_block(lpos, id)
+	edits.record_block(cpos, lpos, id)
 	_on_block_changed_immediate(chunk, lpos, id)
 	chunk.mark_section_dirty_for_local_y(lpos.y)
 	chunk.update_heightmap_column(lpos.x, lpos.z)
@@ -2367,6 +2403,7 @@ func break_notch_at_world(wpos: Vector3) -> int:
 	if base_id <= 0: return -1
 
 	c.clear_micro_sub(lpos, s)
+	edits.record_micro_sub(cpos, lpos, s, 0)
 	c.dirty = true
 	#_queue_rebuild(c)
 	c.rebuild_mesh()
@@ -2431,6 +2468,7 @@ func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = V
 		return
 
 	c.set_micro_sub(lpos, s, base_id)
+	edits.record_micro_sub(cpos, lpos, s, base_id)  # NEW
 	#_queue_rebuild(c)
 	c.rebuild_mesh()
 
