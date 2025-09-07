@@ -6,7 +6,7 @@ const CY := Chunk.CY
 const CZ := Chunk.CZ
 
 # ---- Player-centered streaming ----
-const RENDER_RADIUS := 10        # in chunks (5 => 11x11)
+const RENDER_RADIUS := 5        # in chunks (5 => 11x11)
 const TICK_SECONDS := 0.5
 
 const PRELOAD_RADIUS := RENDER_RADIUS + 2   # one ring ahead for prewarm
@@ -1654,7 +1654,8 @@ func _start_gen_task(c: Chunk) -> void:
 	var payload := {
 		"cpos": cpos,
 		"CX": CX, "CY": CY, "CZ": CZ,
-		"noise": np
+		"noise": np,
+		"seed": height_noise.seed
 	}
 	WorkerThreadPool.add_task(Callable(self, "_gen_worker").bind(payload))
 
@@ -1741,7 +1742,26 @@ func _gen_worker(payload: Dictionary) -> void:
 									if keep > 0.15 and blocks[px][py][pz] == BlockDB.BlockId.AIR:
 										blocks[px][py][pz] = BlockDB.BlockId.LEAVES
 					trees.append({"at": Vector3i(x, h, z), "height": t_height})
+	
+	# --- CAVES (carve after terrain/trees, before returning) ---
+	var seed_any: Variant = payload.get("seed", 1337)
+	var world_seed: int = int(seed_any)
+	var base_x_c: int = cpos.x * CX_
+	var base_z_c: int = cpos.z * CZ_
 
+	# Carves in-place into `blocks`, returns updated heightmap (top solids).
+	heightmap = CaveCarver.carve_chunk(
+		blocks,
+		heightmap,
+		base_x_c,
+		base_z_c,
+		CX_,
+		CY_,
+		CZ_,
+		world_seed
+	)
+
+	
 	# publish result to main thread
 	var result := {"cpos": cpos, "blocks": blocks, "heightmap": heightmap, "trees": trees}
 	_gen_mutex.lock()

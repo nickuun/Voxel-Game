@@ -2,7 +2,7 @@ extends Node3D
 class_name Chunk
 
 const CX := 16
-const CY := 128
+const CY := 512
 const CZ := 16
 
 var chunk_pos: Vector3i            # chunk grid coords (cx, cy, cz) — we’ll keep cy=0 for heightmap world
@@ -16,7 +16,7 @@ var dirty := true
 var atlas_tex: Texture2D
 var material: StandardMaterial3D
 
-const SECTION_H: int = 16
+const SECTION_H: int = 32
 const SECTION_COUNT: int = CY / SECTION_H
 
 var wants_collision: bool = true
@@ -79,17 +79,18 @@ func reuse_setup(chunk_pos_: Vector3i, atlas: Texture2D) -> void:
 	material.roughness = 1.0
 	if atlas_tex is Texture2D:
 		material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-
-	# Allocate block grid
-	blocks = []
-	for x in CX:
-		var col: Array = []
-		for y in CY:
-			var stack: Array = []
-			for z in CZ:
-				stack.append(BlockDB.BlockId.AIR)
-			col.append(stack)
-		blocks.append(col)
+	
+	
+	## Allocate block grid
+	#blocks = []
+	#for x in CX:
+		#var col: Array = []
+		#for y in CY:
+			#var stack: Array = []
+			#for z in CZ:
+				#stack.append(BlockDB.BlockId.AIR)
+			#col.append(stack)
+		#blocks.append(col)
 
 	# Clear micro dict
 	micro.clear()
@@ -549,35 +550,71 @@ func _emit_micro_faces(
 						added_trans = true
 
 	return {"opaque": added_opaque, "trans": added_trans}
-
 func snapshot_data() -> Dictionary:
-	# Deep copy blocks (Array<Array<Array<int>>>)
 	var blocks_copy: Array = []
-	blocks_copy.resize(CX)
-	for x in CX:
-		var col := []
-		col.resize(CY)
-		for y in CY:
-			col[y] = (blocks[x][y] as Array).duplicate()  # one level deep
-		blocks_copy[x] = col
+	var have_full: bool = false
 
-	# Copy heightmap
-	var hm := PackedInt32Array()
+	# Check if blocks is a fully-formed 3D grid
+	if blocks.size() == CX:
+		var x: int = 0
+		have_full = true
+		while x < CX:
+			if typeof(blocks[x]) != TYPE_ARRAY:
+				have_full = false
+				break
+			var col_any: Array = blocks[x]
+			if col_any.size() != CY:
+				have_full = false
+				break
+			x += 1
+
+	if have_full:
+		blocks_copy.resize(CX)
+		var x2: int = 0
+		while x2 < CX:
+			var col_copy: Array = []
+			col_copy.resize(CY)
+			var y2: int = 0
+			while y2 < CY:
+				var stack_any = blocks[x2][y2]
+				if typeof(stack_any) == TYPE_ARRAY:
+					var stack_arr: Array = stack_any
+					col_copy[y2] = stack_arr.duplicate()
+				else:
+					var empty: Array = []
+					col_copy[y2] = empty
+				y2 += 1
+			blocks_copy[x2] = col_copy
+			x2 += 1
+	else:
+		# Not generated yet → leave blocks empty in the snapshot.
+		# Downstream code must treat missing blocks as "not cached".
+		var empty_blocks: Array = []
+		blocks_copy = empty_blocks
+
+	var hm: PackedInt32Array = PackedInt32Array()
 	hm.resize(heightmap_top_solid.size())
-	for i in hm.size():
+	var i: int = 0
+	while i < hm.size():
 		hm[i] = heightmap_top_solid[i]
+		i += 1
 
-	# Copy micro dict
-	var micro_copy := {}
+	var micro_copy: Dictionary = {}
 	for k in micro.keys():
 		var arr: PackedInt32Array = micro[k]
-		var arr_copy := PackedInt32Array()
+		var arr_copy: PackedInt32Array = PackedInt32Array()
 		arr_copy.resize(arr.size())
-		for i in arr.size():
-			arr_copy[i] = arr[i]
+		var j: int = 0
+		while j < arr.size():
+			arr_copy[j] = arr[j]
+			j += 1
 		micro_copy[k] = arr_copy
 
-	return {"blocks": blocks_copy, "heightmap": hm, "micro": micro_copy}
+	var out: Dictionary = {}
+	out["blocks"] = blocks_copy
+	out["heightmap"] = hm
+	out["micro"] = micro_copy
+	return out
 
 func apply_snapshot(snap: Dictionary) -> void:
 	# blocks (required)
@@ -622,38 +659,10 @@ func apply_snapshot(snap: Dictionary) -> void:
 	dirty = true
 
 func snapshot_mesh_and_data() -> Dictionary:
-	# NOTE: meshes/shapes are Resources (cheap to keep). We include blocks
-	# so a respawn can restore everything w/out regeneration.
-	var blocks_copy: Array = []
-	blocks_copy.resize(CX)
-	for x in CX:
-		var col := []
-		col.resize(CY)
-		for y in CY:
-			col[y] = (blocks[x][y] as Array).duplicate()
-		blocks_copy[x] = col
-
-	var hm := PackedInt32Array()
-	hm.resize(heightmap_top_solid.size())
-	for i in hm.size():
-		hm[i] = heightmap_top_solid[i]
-
-	var micro_copy := {}
-	for k in micro.keys():
-		var arr: PackedInt32Array = micro[k]
-		var a2 := PackedInt32Array()
-		a2.resize(arr.size())
-		for i in arr.size():
-			a2[i] = arr[i]
-		micro_copy[k] = a2
-
-	return {
-		"blocks": blocks_copy,
-		"heightmap": hm,
-		"micro": micro_copy,
-		"mesh": mesh_instance.mesh,                 # Resource
-		"shape": collision_shape.shape              # Resource (may be null)
-	}
+	var snap: Dictionary = snapshot_data()
+	snap["mesh"] = mesh_instance.mesh
+	snap["shape"] = collision_shape.shape
+	return snap
 
 func apply_snapshot_with_mesh(snap: Dictionary) -> void:
 	blocks = snap.get("blocks", [])
