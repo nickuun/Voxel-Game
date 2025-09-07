@@ -1,4 +1,4 @@
-[gd_scene load_steps=19 format=3 uid="uid://4uib1b3po1x5"]
+[gd_scene load_steps=18 format=3 uid="uid://4uib1b3po1x5"]
 
 [ext_resource type="Script" uid="uid://cah10o7w7kcc1" path="res://main.gd" id="1_7mycd"]
 [ext_resource type="PackedScene" uid="uid://cp3iojl7e0c7o" path="res://src/player/FPSController.tscn" id="1_ig7tw"]
@@ -6,7 +6,6 @@
 [ext_resource type="Script" uid="uid://76kppjph2nr4" path="res://src/World/WorldEnvironment/env_preset_outdoor.gd" id="2_kek77"]
 [ext_resource type="PackedScene" uid="uid://2xw6pytakgbk" path="res://src/player/SelectionBox/selection_box.tscn" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://dvsarnk5hnyuf" path="res://src/UI/hotbar.gd" id="4_1bvp3"]
-[ext_resource type="PackedScene" uid="uid://dhn43hyu603ax" path="res://src/enemies/Chicken/chicken.tscn" id="5_lquwl"]
 [ext_resource type="Shader" uid="uid://duyfqqkcm5g0m" path="res://src/shaders/ColourInvert.gdshader" id="6_5vw27"]
 [ext_resource type="PackedScene" uid="uid://o1exmhovughr" path="res://src/UI/inventory.tscn" id="7_272bh"]
 [ext_resource type="Shader" uid="uid://cbrul851bmp1s" path="res://src/shaders/Skybox/sky_clouds.gdshader" id="10_4c57u"]
@@ -62,11 +61,8 @@ environment = SubResource("Environment_0xm2m")
 script = ExtResource("2_kek77")
 
 [node name="FpsController" parent="." instance=ExtResource("1_ig7tw")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.917569, 49.3139, 2.13072)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.918, 200, 2.131)
 world_path = NodePath("../World")
-
-[node name="Chicken" parent="." instance=ExtResource("5_lquwl")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.917569, 49.3139, 2.13072)
 
 [node name="SelectionBox" parent="." instance=ExtResource("3_h2yge")]
 
