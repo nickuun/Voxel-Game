@@ -1,4 +1,4 @@
-[gd_scene load_steps=21 format=3 uid="uid://4uib1b3po1x5"]
+[gd_scene load_steps=19 format=3 uid="uid://4uib1b3po1x5"]
 
 [ext_resource type="Script" uid="uid://cah10o7w7kcc1" path="res://main.gd" id="1_7mycd"]
 [ext_resource type="PackedScene" uid="uid://cp3iojl7e0c7o" path="res://src/player/FPSController.tscn" id="1_ig7tw"]
@@ -10,7 +10,6 @@
 [ext_resource type="Shader" uid="uid://duyfqqkcm5g0m" path="res://src/shaders/ColourInvert.gdshader" id="6_5vw27"]
 [ext_resource type="PackedScene" uid="uid://o1exmhovughr" path="res://src/UI/inventory.tscn" id="7_272bh"]
 [ext_resource type="Shader" uid="uid://cbrul851bmp1s" path="res://src/shaders/Skybox/sky_clouds.gdshader" id="10_4c57u"]
-[ext_resource type="Script" uid="uid://dhypl2s0jgwrm" path="res://src/UI/fps_label.gd" id="10_efxa6"]
 [ext_resource type="Script" uid="uid://csididgsnqvfy" path="res://src/UI/location_label.gd" id="11_dg77c"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_0xm2m"]
@@ -23,9 +22,6 @@ background_mode = 2
 sky = SubResource("Sky_h2yge")
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_kek77"]
-shader = ExtResource("6_5vw27")
-
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_dg77c"]
 shader = ExtResource("6_5vw27")
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_ycdy4"]
@@ -107,18 +103,6 @@ grow_vertical = 2
 size_flags_horizontal = 4
 theme_override_font_sizes/font_size = 31
 text = "+"
-
-[node name="FPSLabel" type="Label" parent="UI"]
-material = SubResource("ShaderMaterial_dg77c")
-anchors_preset = 1
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -138.0
-offset_bottom = 45.0
-grow_horizontal = 0
-theme_override_font_sizes/font_size = 32
-text = "120 (100)"
-script = ExtResource("10_efxa6")
 
 [node name="Label" type="Label" parent="UI" node_paths=PackedStringArray("player_body")]
 material = SubResource("ShaderMaterial_ycdy4")

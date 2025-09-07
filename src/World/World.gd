@@ -2303,8 +2303,8 @@ func break_notch_at_world(wpos: Vector3) -> int:
 
 	c.clear_micro_sub(lpos, s)
 	c.dirty = true
-	_queue_rebuild(c)
-	#c.rebuild_mesh()
+	#_queue_rebuild(c)
+	c.rebuild_mesh()
 
 	var notch_item := BlockDB.notch_item_for_base(base_id)
 	return notch_item if notch_item != -1 else base_id
@@ -2366,8 +2366,8 @@ func place_notch_at_world(wpos: Vector3, notch_id: int, face_normal: Vector3 = V
 		return
 
 	c.set_micro_sub(lpos, s, base_id)
-	_queue_rebuild(c)
-	#c.rebuild_mesh()
+	#_queue_rebuild(c)
+	c.rebuild_mesh()
 
 
 # =========================================================
