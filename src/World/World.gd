@@ -1002,22 +1002,50 @@ func _emit_greedy_tops_layer_hm(
 func _build_top_mask(CX:int, CY:int, CZ:int, blocks:Array, y:int) -> Array:
 	var mask := []
 	mask.resize(CX)
+
 	for x in CX:
 		var row := PackedInt32Array()
 		row.resize(CZ)
 		for z in CZ:
-			row[z] = -1
-			var id = blocks[x][y][z]
-			if id == BlockDB.BlockId.AIR: continue
-			if BlockDB.is_transparent(id): continue
+			row[z] = -1  # default: no face
+
+			# ---- Robust bounds/sanity checks ----
+			if y < 0 or y >= CY:
+				continue
+			if x >= blocks.size():
+				continue
+			var col = blocks[x]
+			if typeof(col) != TYPE_ARRAY:
+				continue
+			if y >= (col as Array).size():
+				continue
+			var stack = (col as Array)[y]
+			if typeof(stack) != TYPE_ARRAY:
+				continue
+			if z >= (stack as Array).size():
+				continue
+
+			# ---- Safe reads begin here ----
+			var id: int = int((stack as Array)[z])
+			if id == BlockDB.BlockId.AIR:
+				continue
+			if BlockDB.is_transparent(id):
+				continue
+
 			var neighbor_id := BlockDB.BlockId.AIR
-			if y + 1 < CY:
-				neighbor_id = blocks[x][y + 1][z]
+			if (y + 1) < CY and (y + 1) < (col as Array).size():
+				var above = (col as Array)[y + 1]
+				if typeof(above) == TYPE_ARRAY and z < (above as Array).size():
+					neighbor_id = int((above as Array)[z])
+
 			if _face_hidden_fast(id, neighbor_id):
 				continue
-			row[z] = BlockDB.get_face_tile(id, 2)  # +Y tile index
+
+			row[z] = BlockDB.get_face_tile(id, 2)  # +Y
 		mask[x] = row
+
 	return mask
+
 
 
 # 1D greedy: merge runs along X for each Z row. Very robust and already a big win.

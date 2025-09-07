@@ -18,12 +18,13 @@ var block_ids: Array[int] = [
 	BlockDB.BlockId.COBBLE, BlockDB.BlockId.STONE_BRICKS, BlockDB.BlockId.GLASS,
 ]
 
-const MAX_STACK := 99
 var counts: Array[int] = [
 	16, 32, 64,
 	12,  8,  1,
 	40, 20,  6,
 ]
+
+const MAX_STACK := 99
 
 var selected := 0
 var atlas: Texture2D
