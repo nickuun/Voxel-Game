@@ -1490,10 +1490,10 @@ func despawn_chunk(cpos: Vector3i) -> void:
 	chunks.erase(cpos)
 
 	if c != null and is_instance_valid(c):
-		_add_to_cache(cpos, c.snapshot_data())
+		_add_to_cache(cpos, c.steal_data_snapshot())
 		c.pending_kill = true
 		_remove_from_queues_by_chunk(c)
-		_mesh_cache_put(cpos, c.snapshot_mesh_and_data())
+		_mesh_cache_put(cpos, c.snapshot_mesh_only())
 		_return_chunk_to_pool(c)
 
 func _obtain_chunk() -> Chunk:

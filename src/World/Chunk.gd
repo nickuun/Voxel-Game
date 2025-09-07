@@ -692,6 +692,35 @@ func apply_snapshot_with_mesh(snap: Dictionary) -> void:
 	dirty = false
 
 
+func snapshot_mesh_only() -> Dictionary:
+	var d: Dictionary = {}
+	d["mesh"] = mesh_instance.mesh
+	d["shape"] = collision_shape.shape
+	return d
+
+func steal_data_snapshot() -> Dictionary:
+	var d: Dictionary = {}
+	d["blocks"] = blocks
+	d["heightmap"] = heightmap_top_solid
+	d["micro"] = micro
+
+	# Re-init local storage so the chunk can be pooled safely
+	var hm: PackedInt32Array = PackedInt32Array()
+	hm.resize(CX * CZ)
+	var i: int = 0
+	while i < hm.size():
+		hm[i] = -1
+		i += 1
+
+	var empty_blocks: Array = []
+	blocks = empty_blocks
+	heightmap_top_solid = hm
+	var empty_micro: Dictionary = {}
+	micro = empty_micro
+
+	return d
+
+
 # Returns true if subcell (sx,sy,sz) is present in the 2×2×2 mask.
 # sx/sy/sz must be 0 or 1.
 # --- keep this helper if you find it handy ---
