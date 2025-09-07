@@ -1668,14 +1668,14 @@ func _make_noise(np: Dictionary) -> FastNoiseLite:
 	return n
 
 func _gen_worker(payload: Dictionary) -> void:
-	# Recreate local noises (thread-safe)
+	# --- thread-local noise ---
 	var cpos: Vector3i = payload["cpos"]
 	var CX_: int = int(payload["CX"]); var CY_: int = int(payload["CY"]); var CZ_: int = int(payload["CZ"])
 	var hn := _make_noise(payload["noise"]["height"])
 	var tn := _make_noise(payload["noise"]["tree"])
 	var ln := _make_noise(payload["noise"]["leaf"])
 
-	# Allocate arrays
+	# --- allocate blocks ---
 	var blocks: Array = []
 	blocks.resize(CX_)
 	for x in CX_:
@@ -1684,28 +1684,26 @@ func _gen_worker(payload: Dictionary) -> void:
 		for y in CY_:
 			var stack := []
 			stack.resize(CZ_)
-			for z in CZ_:
-				stack[z] = BlockDB.BlockId.AIR
+			for z in CZ_: stack[z] = BlockDB.BlockId.AIR
 			col[y] = stack
 		blocks[x] = col
 
 	var heightmap := PackedInt32Array()
 	heightmap.resize(CX_ * CZ_)
 
-	var trees: Array = []   # each: {"at": Vector3i, "height": int}
+	var trees: Array = []   # {"at": Vector3i(base_y), "height": int}
 
 	var base_x := cpos.x * CX_
 	var base_z := cpos.z * CZ_
 
+	# --- base terrain + initial HM (no trees yet) ---
 	for x in CX_:
 		for z in CZ_:
 			var wx := base_x + x
 			var wz := base_z + z
-
 			var h_f := remap(hn.get_noise_2d(wx, wz), -1.0, 1.0, 20.0, 40.0)
 			var h = clamp(int(round(h_f)), 1, CY_ - 2)
 			heightmap[x * CZ_ + z] = h - 1
-
 			for y in range(0, h):
 				var id := BlockDB.BlockId.DIRT
 				if y == h - 1:
@@ -1714,55 +1712,64 @@ func _gen_worker(payload: Dictionary) -> void:
 					id = BlockDB.BlockId.STONE
 				blocks[x][y][z] = id
 
-			# Trees (no notches here; we'll decorate on main thread)
-			var place_val := 0.5 * (tn.get_noise_2d(wx, wz) + 1.0)
-			if place_val > 0.80:
-				var hval := 0.5 * (tn.get_noise_2d(wx + 12345, wz - 54321) + 1.0)
-				var t_height := 4 + int(round(hval * 2.0))
-				# require grass under trunk
-				if blocks[x][h - 1][z] == BlockDB.BlockId.GRASS:
-					# trunk
-					for i in t_height:
-						var py = h + i
-						if py >= CY_: break
-						blocks[x][py][z] = BlockDB.BlockId.LOG
-					# crown
-					var top_y = h + t_height
-					for dx in range(-2, 3):
-						for dy in range(-2, 2):
-							for dz in range(-2, 3):
-								var px := x + dx
-								var py = top_y + dy
-								var pz := z + dz
-								if px < 0 or px >= CX_ or py < 0 or py >= CY_ or pz < 0 or pz >= CZ_:
-									continue
-								var dist := Vector3(abs(dx), abs(dy) * 1.3, abs(dz)).length()
-								if dist <= 2.6:
-									var keep := 0.5 * (ln.get_noise_3d(float(wx + dx * 97), float(top_y + dy * 57), float(wz + dz * 131)) + 1.0)
-									if keep > 0.15 and blocks[px][py][pz] == BlockDB.BlockId.AIR:
-										blocks[px][py][pz] = BlockDB.BlockId.LEAVES
-					trees.append({"at": Vector3i(x, h, z), "height": t_height})
-	
-	# --- CAVES (carve after terrain/trees, before returning) ---
-	var seed_any: Variant = payload.get("seed", 1337)
-	var world_seed: int = int(seed_any)
-	var base_x_c: int = cpos.x * CX_
-	var base_z_c: int = cpos.z * CZ_
-
-	# Carves in-place into `blocks`, returns updated heightmap (top solids).
+	# --- caves (carve in-place, recomputes HM) ---
+	var world_seed: int = int(payload.get("seed", 1337))
 	heightmap = CaveCarver.carve_chunk(
-		blocks,
-		heightmap,
-		base_x_c,
-		base_z_c,
-		CX_,
-		CY_,
-		CZ_,
-		world_seed
+		blocks, heightmap, base_x, base_z, CX_, CY_, CZ_, world_seed
 	)
 
-	
-	# publish result to main thread
+	# --- sky islands (additive, then skin + raise HM) ---
+	heightmap = SkyIslands.add_to_chunk(
+		blocks, heightmap, base_x, base_z, CX_, CY_, CZ_, world_seed
+	)
+
+	# --- trees LAST (use final HM so clearance/islands are respected) ---
+	for x in CX_:
+		for z in CZ_:
+			var idx := x * CZ_ + z
+			var top := heightmap[idx]             # top solid after caves + islands
+			if top < 0: continue
+			var wx := base_x + x
+			var wz := base_z + z
+
+			var place_val := 0.5 * (tn.get_noise_2d(wx, wz) + 1.0)
+			if place_val <= 0.80: continue
+
+			# require GRASS under trunk
+			if blocks[x][top][z] != BlockDB.BlockId.GRASS: continue
+
+			var hval := 0.5 * (tn.get_noise_2d(wx + 12345, wz - 54321) + 1.0)
+			var t_height := 4 + int(round(hval * 2.0))
+
+			var base_y := top + 1
+			if base_y >= CY_: continue
+
+			# trunk (don’t overwrite existing solids – e.g., bridges)
+			for i in t_height:
+				var py := base_y + i
+				if py >= CY_: break
+				if blocks[x][py][z] != BlockDB.BlockId.AIR: break
+				blocks[x][py][z] = BlockDB.BlockId.LOG
+
+			# crown (AIR-only)
+			var top_y := base_y + t_height
+			for dx in range(-2, 3):
+				for dy in range(-2, 2):
+					for dz in range(-2, 3):
+						var px := x + dx
+						var py := top_y + dy
+						var pz := z + dz
+						if px < 0 or px >= CX_ or py < 0 or py >= CY_ or pz < 0 or pz >= CZ_: continue
+						if blocks[px][py][pz] != BlockDB.BlockId.AIR: continue
+						var dist := Vector3(abs(dx), abs(dy) * 1.3, abs(dz)).length()
+						if dist <= 2.6:
+							var keep := 0.5 * (ln.get_noise_3d(float(wx + dx * 97), float(top_y + dy * 57), float(wz + dz * 131)) + 1.0)
+							if keep > 0.15:
+								blocks[px][py][pz] = BlockDB.BlockId.LEAVES
+
+			trees.append({"at": Vector3i(x, base_y, z), "height": t_height})
+
+	# --- publish result ---
 	var result := {"cpos": cpos, "blocks": blocks, "heightmap": heightmap, "trees": trees}
 	_gen_mutex.lock()
 	_gen_results.append(result)
