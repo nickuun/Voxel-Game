@@ -17,6 +17,9 @@ const MICRO_TERRAIN_GATE := 0.15
 const MICRO_LEAF_GATE := 0.10
 const MICRO_Y_UPPER := 0
 
+# --- Vertical world scale (new) ---
+const SURFACE_MIN := 56    # min surface Y in blocks
+const SURFACE_MAX := 112   # max surface Y in blocks
 const TREE_NOTCH_GATE := 0.25
 const CROWN_SCAN_RADIUS := 3
 
@@ -1701,7 +1704,7 @@ func _gen_worker(payload: Dictionary) -> void:
 			var wx := base_x + x
 			var wz := base_z + z
 
-			var h_f := remap(hn.get_noise_2d(wx, wz), -1.0, 1.0, 20.0, 40.0)
+			var h_f := remap(hn.get_noise_2d(wx, wz), -1.0, 1.0, float(SURFACE_MIN), float(SURFACE_MAX))
 			var h = clamp(int(round(h_f)), 1, CY_ - 2)
 			heightmap[x * CZ_ + z] = h - 1
 
@@ -1709,7 +1712,7 @@ func _gen_worker(payload: Dictionary) -> void:
 				var id := BlockDB.BlockId.DIRT
 				if y == h - 1:
 					id = BlockDB.BlockId.GRASS
-				elif y < h - 5:
+				elif y < h - 10:
 					id = BlockDB.BlockId.STONE
 				blocks[x][y][z] = id
 
@@ -1919,7 +1922,7 @@ func generate_chunk_blocks(c: Chunk) -> void:
 			var wx: int = base_x + x
 			var wz: int = base_z + z
 
-			var h_f: float = remap(height_noise.get_noise_2d(wx, wz), -1.0, 1.0, 20.0, 40.0)
+			var h_f: float = remap(height_noise.get_noise_2d(wx, wz), -1.0, 1.0, float(SURFACE_MIN), float(SURFACE_MAX))
 			var h: int = clamp(int(round(h_f)), 1, Chunk.CY - 2)
 
 			for y in range(0, h):

@@ -2,7 +2,7 @@ extends Node3D
 class_name Chunk
 
 const CX := 16
-const CY := 128
+const CY := 192
 const CZ := 16
 
 var chunk_pos: Vector3i            # chunk grid coords (cx, cy, cz) — we’ll keep cy=0 for heightmap world
