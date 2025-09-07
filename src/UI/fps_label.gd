@@ -33,7 +33,7 @@ func _process(delta: float) -> void:
 
 	var current_i: int = roundi(fps_now)
 	var average_i: int = roundi(avg_fps)
-	text = str(current_i) + " (" + str(average_i) + ")"
+	text ="FPS:" + str(current_i) + " (" + str(average_i) + ")"
 
 func set_average_window_seconds(seconds: float) -> void:
 	if seconds < 0.1:

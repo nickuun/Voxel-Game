@@ -35,7 +35,7 @@ const SPAWN_BUDGET_PER_FRAME: int = 1				# spawn at most N new chunk nodes / fra
 const GEN_BUDGET_PER_FRAME: int = 3					# generate block data for at most N chunks / frame
 # BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
 const CHUNK_POOL_SIZE: int = 64						# simple pool upper bound
-const GEN_TASK_CONCURRENCY := 10 # optional cap
+const GEN_TASK_CONCURRENCY := 4 # optional cap
 
 # ---- Noises (deterministic) ----
 var height_noise := FastNoiseLite.new()       # terrain height
