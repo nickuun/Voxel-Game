@@ -6,7 +6,7 @@ const CY := Chunk.CY
 const CZ := Chunk.CZ
 
 # ---- Player-centered streaming ----
-const RENDER_RADIUS := 5        # in chunks (5 => 11x11)
+const RENDER_RADIUS := 10        # in chunks (5 => 11x11)
 const TICK_SECONDS := 0.5
 
 const PRELOAD_RADIUS := RENDER_RADIUS + 2   # one ring ahead for prewarm
@@ -28,7 +28,7 @@ var _tick_phase := 0
 
 const COLLISION_RADIUS: int = 1						# chunks near player that get colliders
 const TICK_CHUNK_RADIUS: int = 0					# chunks near player that tick simulation
-const SPAWN_BUDGET_PER_FRAME: int = 1				# spawn at most N new chunk nodes / frame
+const SPAWN_BUDGET_PER_FRAME: int = 2				# spawn at most N new chunk nodes / frame
 const GEN_BUDGET_PER_FRAME: int = 3					# generate block data for at most N chunks / frame
 # BUILD_BUDGET_PER_FRAME already exists and caps mesh builds per frame (keep it)
 const CHUNK_POOL_SIZE: int = 64						# simple pool upper bound

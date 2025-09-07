@@ -11,7 +11,7 @@ class_name SkyIslands
 
 # How far apart (world X/Z) we try rare macro "continent" centers.
 # Larger => rarer macro islands, smaller => more frequent.
-const FEATURE_STRIDE_XZ: int = 420
+const FEATURE_STRIDE_XZ: int = 640
 
 # Vertical band where sky islands may appear (fractions of CY).
 # LOWER THESE to bring islands closer to the ground.
@@ -23,32 +23,32 @@ const SKY_MAX_FRAC: float = 0.30    # default ~70% of CY
 const SKY_CLEARANCE_OVER_TERRAIN: int = 8
 
 # Macro "continents" (big, blobby bases)
-const MACRO_SPAWN_CHANCE: float = 0.82  # higher => fewer macro spawns
-const MACRO_R_MIN: int = 20             # horizontal base radius (min)
-const MACRO_R_MAX: int = 42             # horizontal base radius (max)
-const MACRO_R_TAIL: int = 72            # rare supersized
-const MACRO_Y_THICK_MIN: float = 0.30   # vertical thickness = radius * k (min)
-const MACRO_Y_THICK_MAX: float = 0.55   # vertical thickness = radius * k (max)
+const MACRO_SPAWN_CHANCE: float = 0.74  # higher => fewer macro spawns
+const MACRO_R_MIN: int = 28             # horizontal base radius (min)
+const MACRO_R_MAX: int = 56             # horizontal base radius (max)
+const MACRO_R_TAIL: int = 96            # rare supersized
+const MACRO_Y_THICK_MIN: float = 0.45   # vertical thickness = radius * k (min)
+const MACRO_Y_THICK_MAX: float = 0.70   # vertical thickness = radius * k (max)
 
 # Meso chains (beads & bridges you can walk)
-const CHAIN_SPAWN_CHANCE: float = 0.85
-const CHAIN_STEP_MIN: int = 22          # link spacing (min)
-const CHAIN_STEP_MAX: int = 36          # link spacing (max)
-const CHAIN_NODES_MIN: int = 6          # links (min)
-const CHAIN_NODES_MAX: int = 12         # links (max)
-const CHAIN_R_MIN: int = 6              # bead radius (min)
-const CHAIN_R_MAX: int = 12             # bead radius (max)
+const CHAIN_SPAWN_CHANCE: float = 0.35
+const CHAIN_STEP_MIN: int = 36          # link spacing (min)
+const CHAIN_STEP_MAX: int = 64          # link spacing (max)
+const CHAIN_NODES_MIN: int = 4          # links (min)
+const CHAIN_NODES_MAX: int = 7         # links (max)
+const CHAIN_R_MIN: int = 8              # bead radius (min)
+const CHAIN_R_MAX: int = 14             # bead radius (max)
 const BRIDGE_RADIUS_MIN: int = 2        # cylinder bridge radius (min)
-const BRIDGE_RADIUS_MAX: int = 4        # cylinder bridge radius (max)
+const BRIDGE_RADIUS_MAX: int = 3        # cylinder bridge radius (max)
 
 # Micro debris/fins (small scatter that makes midair choices)
-const MICRO_DENSITY: float = 0.06
-const MICRO_R_MIN: int = 3
-const MICRO_R_MAX: int = 6
-const FIN_CHANCE: float = 0.25          # chance to place thin plate instead of ball
+const MICRO_DENSITY: float = 0.012
+const MICRO_R_MIN: int = 1
+const MICRO_R_MAX: int = 2
+const FIN_CHANCE: float = 0.10          # chance to place thin plate instead of ball
 
 # Decorative spires under islands
-const SPIRE_CHANCE: float = 0.35
+const SPIRE_CHANCE: float = 0.20
 const SPIRE_LEN_MIN: int = 10
 const SPIRE_LEN_MAX: int = 28
 const SPIRE_R_MIN: int = 1

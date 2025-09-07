@@ -214,10 +214,40 @@ func set_block(local: Vector3i, id: int) -> void:
 	if id != BlockDB.BlockId.AIR:
 		heightmap_raise_if_higher_local(local)
 
+# Returns true if (x,y,z) are valid *local* indices for `blocks`.
+func _in_bounds(x: int, y: int, z: int) -> bool:
+	var cx: int = blocks.size()
+	if x < 0 or x >= cx:
+		return false
+	var cy: int = (blocks[0] as Array).size()
+	if y < 0 or y >= cy:
+		return false
+	var cz: int = ((blocks[0] as Array)[0] as Array).size()
+	if z < 0 or z >= cz:
+		return false
+	return true
 
-func get_block(local:Vector3i) -> int:
-	if not index_in_bounds(local.x, local.y, local.z): return BlockDB.BlockId.AIR
-	return blocks[local.x][local.y][local.z]
+# Debug version to log what went wrong (use while hunting bugs, then remove).
+func _in_bounds_debug(x: int, y: int, z: int) -> bool:
+	var cx: int = blocks.size()
+	var cy: int = (blocks[0] as Array).size()
+	var cz: int = ((blocks[0] as Array)[0] as Array).size()
+	if x < 0 or x >= cx:
+		push_warning("get_block OOB X=", str(x), " valid [0..", str(cx - 1), "]")
+		return false
+	if y < 0 or y >= cy:
+		push_warning("get_block OOB Y=", str(y), " valid [0..", str(cy - 1), "]")
+		return false
+	if z < 0 or z >= cz:
+		push_warning("get_block OOB Z=", str(z), " valid [0..", str(cz - 1), "]")
+		return false
+	return true
+
+func get_block(local: Vector3i) -> int:
+	# Use _in_bounds_debug while testing; swap to _in_bounds for release.
+	if not _in_bounds_debug(local.x, local.y, local.z):
+		return BlockDB.BlockId.AIR
+	return int((blocks[local.x] as Array)[local.y][local.z])
 
 func _uv_from_local(face_i:int, local:Vector3, tile:int) -> Vector2:
 	var uvs := BlockDB.tile_uvs(tile)     # [TL, TR, BR, BL]
