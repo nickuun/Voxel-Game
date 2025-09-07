@@ -538,15 +538,20 @@ func _emit_micro_faces(
 	return {"opaque": added_opaque, "trans": added_trans}
 
 func snapshot_data() -> Dictionary:
-	# Deep copy blocks (Array<Array<Array<int>>>)
+	# Robust deep copy of blocks (works when blocks == [])
 	var blocks_copy: Array = []
-	blocks_copy.resize(CX)
-	for x in CX:
-		var col := []
-		col.resize(CY)
-		for y in CY:
-			col[y] = (blocks[x][y] as Array).duplicate()  # one level deep
-		blocks_copy[x] = col
+
+	if blocks.size() > 0:
+		blocks_copy.resize(blocks.size())
+		for x in blocks.size():
+			var col_src: Array = blocks[x]
+			var col_copy: Array = []
+			col_copy.resize(col_src.size())
+			for y in col_src.size():
+				# each is an Array<int>; one-level duplicate is enough
+				col_copy[y] = (col_src[y] as Array).duplicate()
+			blocks_copy[x] = col_copy
+	# else: leave blocks_copy as []
 
 	# Copy heightmap
 	var hm := PackedInt32Array()
@@ -565,6 +570,15 @@ func snapshot_data() -> Dictionary:
 		micro_copy[k] = arr_copy
 
 	return {"blocks": blocks_copy, "heightmap": hm, "micro": micro_copy}
+
+
+func snapshot_mesh_and_data() -> Dictionary:
+	# Reuse the safe data copy above, then add mesh/shape if present
+	var snap := snapshot_data()
+	snap["mesh"] = mesh_instance.mesh
+	snap["shape"] = collision_shape.shape
+	return snap
+
 
 func apply_snapshot(snap: Dictionary) -> void:
 	# blocks (required)
@@ -608,39 +622,39 @@ func apply_snapshot(snap: Dictionary) -> void:
 		section_dirty[s] = 1
 	dirty = true
 
-func snapshot_mesh_and_data() -> Dictionary:
-	# NOTE: meshes/shapes are Resources (cheap to keep). We include blocks
-	# so a respawn can restore everything w/out regeneration.
-	var blocks_copy: Array = []
-	blocks_copy.resize(CX)
-	for x in CX:
-		var col := []
-		col.resize(CY)
-		for y in CY:
-			col[y] = (blocks[x][y] as Array).duplicate()
-		blocks_copy[x] = col
-
-	var hm := PackedInt32Array()
-	hm.resize(heightmap_top_solid.size())
-	for i in hm.size():
-		hm[i] = heightmap_top_solid[i]
-
-	var micro_copy := {}
-	for k in micro.keys():
-		var arr: PackedInt32Array = micro[k]
-		var a2 := PackedInt32Array()
-		a2.resize(arr.size())
-		for i in arr.size():
-			a2[i] = arr[i]
-		micro_copy[k] = a2
-
-	return {
-		"blocks": blocks_copy,
-		"heightmap": hm,
-		"micro": micro_copy,
-		"mesh": mesh_instance.mesh,                 # Resource
-		"shape": collision_shape.shape              # Resource (may be null)
-	}
+#func snapshot_mesh_and_data() -> Dictionary:
+	## NOTE: meshes/shapes are Resources (cheap to keep). We include blocks
+	## so a respawn can restore everything w/out regeneration.
+	#var blocks_copy: Array = []
+	#blocks_copy.resize(CX)
+	#for x in CX:
+		#var col := []
+		#col.resize(CY)
+		#for y in CY:
+			#col[y] = (blocks[x][y] as Array).duplicate()
+		#blocks_copy[x] = col
+#
+	#var hm := PackedInt32Array()
+	#hm.resize(heightmap_top_solid.size())
+	#for i in hm.size():
+		#hm[i] = heightmap_top_solid[i]
+#
+	#var micro_copy := {}
+	#for k in micro.keys():
+		#var arr: PackedInt32Array = micro[k]
+		#var a2 := PackedInt32Array()
+		#a2.resize(arr.size())
+		#for i in arr.size():
+			#a2[i] = arr[i]
+		#micro_copy[k] = a2
+#
+	#return {
+		#"blocks": blocks_copy,
+		#"heightmap": hm,
+		#"micro": micro_copy,
+		#"mesh": mesh_instance.mesh,                 # Resource
+		#"shape": collision_shape.shape              # Resource (may be null)
+	#}
 
 func apply_snapshot_with_mesh(snap: Dictionary) -> void:
 	blocks = snap.get("blocks", [])

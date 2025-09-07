@@ -86,17 +86,20 @@ const DESPAWN_RADIUS := PRELOAD_RADIUS + 1    # keep chunks 1 ring beyond preloa
 const COLLISION_ON_RADIUS := COLLISION_RADIUS # turn ON at this distance
 const COLLISION_OFF_RADIUS := COLLISION_RADIUS + 1  # turn OFF only when 1 ring farther
 
+
+
 # --- Priorities / budgets ---
-const MESH_APPLY_BUDGET_NEAR := 1            # apply more results when near chunks are pending
+const MESH_APPLY_BUDGET_NEAR := 6            # apply more results when near chunks are pending
 const BEAUTIFY_BUDGET_PER_FRAME := 1         # low background polish pass
 
 var _beautify_queue: Array[Chunk] = []
+
 
 const USE_GREEDY_TOPS := true   # opaque-only greedy +Y faces in worker
 
 const GREEDY_TOPS_MODE := 1
 const GREEDY_BOTTOMS := true         # merge -Y opaque faces
-const GREEDY_SIDES   := true         # merge ±X and ±Z opaque faces
+const GREEDY_SIDES   := true        # merge ±X and ±Z opaque faces
 
 
 var MAT_OPAQUE: StandardMaterial3D
