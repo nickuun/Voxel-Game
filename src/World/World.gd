@@ -6,7 +6,7 @@ const CY := Chunk.CY
 const CZ := Chunk.CZ
 
 # ---- Player-centered streaming ----
-const RENDER_RADIUS := 10        # in chunks (5 => 11x11)
+const RENDER_RADIUS := 5        # in chunks (5 => 11x11)
 const TICK_SECONDS := 0.5
 
 const PRELOAD_RADIUS := RENDER_RADIUS + 2   # one ring ahead for prewarm

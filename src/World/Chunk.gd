@@ -80,25 +80,13 @@ func reuse_setup(chunk_pos_: Vector3i, atlas: Texture2D) -> void:
 	if atlas_tex is Texture2D:
 		material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 
-	# Allocate block grid
-	blocks = []
-	for x in CX:
-		var col: Array = []
-		for y in CY:
-			var stack: Array = []
-			for z in CZ:
-				stack.append(BlockDB.BlockId.AIR)
-			col.append(stack)
-		blocks.append(col)
-
-	# Clear micro dict
+	# ✅ lazy: start empty; worker will fill blocks/heightmap
+	blocks = []                # was: nested CX×CY×CZ arrays
 	micro.clear()
 
-	# Clear mesh & collider
 	mesh_instance.mesh = null
 	collision_shape.shape = null
 
-	# Heightmap + per-section flags
 	heightmap_top_solid = PackedInt32Array()
 	heightmap_top_solid.resize(CX * CZ)
 	for i in heightmap_top_solid.size():
@@ -107,12 +95,10 @@ func reuse_setup(chunk_pos_: Vector3i, atlas: Texture2D) -> void:
 	section_dirty = PackedByteArray()
 	section_dirty.resize(SECTION_COUNT)
 	for s in SECTION_COUNT:
-		section_dirty[s] = 1	# dirty on first build
+		section_dirty[s] = 1
 
 	micro_section_counts = PackedInt32Array()
 	micro_section_counts.resize(SECTION_COUNT)
-	for s in SECTION_COUNT:
-		micro_section_counts[s] = 0
 
 	dirty = true
 	wants_collision = true
@@ -206,8 +192,8 @@ static func index_in_bounds(x:int,y:int,z:int) -> bool:
 	return x>=0 and x<CX and y>=0 and y<CY and z>=0 and z<CZ
 
 func set_block(local: Vector3i, id: int) -> void:
-	if not index_in_bounds(local.x, local.y, local.z):
-		return
+	if blocks.size() == 0: return
+	if not index_in_bounds(local.x, local.y, local.z): return
 	blocks[local.x][local.y][local.z] = id
 	dirty = true
 	if id != BlockDB.BlockId.AIR:
@@ -215,6 +201,7 @@ func set_block(local: Vector3i, id: int) -> void:
 
 
 func get_block(local:Vector3i) -> int:
+	if blocks.size() == 0: return BlockDB.BlockId.AIR
 	if not index_in_bounds(local.x, local.y, local.z): return BlockDB.BlockId.AIR
 	return blocks[local.x][local.y][local.z]
 
