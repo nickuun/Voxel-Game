@@ -634,28 +634,69 @@ func _build_x_plane_mask(CX:int, CY:int, CZ:int, blocks:Array, x:int, y0:int, y1
 	var H:int = y1 - y0 + 1
 	var mask := []
 	mask.resize(CZ)
+
+	# If the requested vertical span is empty, return empty columns.
+	if H <= 0:
+		for z in CZ:
+			var empty_col := PackedInt32Array()
+			empty_col.resize(0)
+			mask[z] = empty_col
+		return mask
+
 	for z in CZ:
 		var col := PackedInt32Array()
 		col.resize(H)
 		for i in H:
 			col[i] = -1
 			var y:int = y0 + i
-			var id:int = blocks[x][y][z]
+
+			# ---- Robust bounds/sanity checks ----
+			if y < 0 or y >= CY:
+				continue
+			if x < 0 or x >= CX:
+				continue
+			if x >= blocks.size():
+				continue
+			var bx = blocks[x]
+			if typeof(bx) != TYPE_ARRAY:
+				continue
+			if y >= (bx as Array).size():
+				continue
+			var by = (bx as Array)[y]
+			if typeof(by) != TYPE_ARRAY:
+				continue
+			if z < 0 or z >= (by as Array).size():
+				continue
+
+			# ---- Safe reads begin here ----
+			var id:int = int((by as Array)[z])
 			if id == BlockDB.BlockId.AIR:
 				continue
 			if BlockDB.is_transparent(id):
 				continue
+
+			# Neighbor on the +/-X side depending on face_i (0 = +X, 1 = -X)
 			var nx:int = x + 1
 			if face_i == 1:
 				nx = x - 1
+
 			var neighbor_id:int = BlockDB.BlockId.AIR
-			if nx >= 0 and nx < CX:
-				neighbor_id = blocks[nx][y][z]
+			if nx >= 0 and nx < CX and nx < blocks.size():
+				var nbx = blocks[nx]
+				if typeof(nbx) == TYPE_ARRAY and y < (nbx as Array).size():
+					var nby = (nbx as Array)[y]
+					if typeof(nby) == TYPE_ARRAY and z < (nby as Array).size():
+						neighbor_id = int((nby as Array)[z])
+
 			if _face_hidden_fast(id, neighbor_id):
 				continue
+
 			col[i] = BlockDB.get_face_tile(id, face_i)
+
 		mask[z] = col
+
 	return mask
+
 
 func _emit_x_plane_rects(mask:Array, x:int, y0:int, dst_opaque:Dictionary, face_i:int) -> void:
 	var CZv:int = mask.size()
