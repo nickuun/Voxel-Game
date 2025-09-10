@@ -1,6 +1,7 @@
-[gd_scene load_steps=3 format=3 uid="uid://cp3iojl7e0c7o"]
+[gd_scene load_steps=4 format=3 uid="uid://cp3iojl7e0c7o"]
 
 [ext_resource type="Script" uid="uid://bxkyftth15o3l" path="res://src/player/fps_controller.gd" id="1_vks5o"]
+[ext_resource type="PackedScene" uid="uid://cqnvvc3dny2ow" path="res://src/cubelings/cubeling.tscn" id="2_d1jv1"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_vks5o"]
 radius = 0.3
@@ -19,3 +20,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.683099, 0)
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.0915469, 0)
 shape = SubResource("CapsuleShape3D_vks5o")
+
+[node name="Cubeling" parent="." instance=ExtResource("2_d1jv1")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -9.12347)

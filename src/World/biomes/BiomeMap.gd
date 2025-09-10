@@ -29,8 +29,10 @@ func get_biome(name:String):
 func pick(wx:int, wz:int):
 	var v := chooser.get_noise_2d(wx, wz)
 	var b = null
-	if v < -0.35:
-		b = get_biome("desert")
+	if v < -0.70:
+		b = get_biome("desert") 
+	elif v < -0.45:
+		b = get_biome("black_desert")
 	elif v < 0.15:
 		b = get_biome("grass")
 	elif v < 0.55:

@@ -1,0 +1,15 @@
+[gd_scene load_steps=3 format=3 uid="uid://cqnvvc3dny2ow"]
+
+[ext_resource type="PackedScene" uid="uid://bsyky7f5hlg5p" path="res://assets/models/cubelings/SproutCub/SproutCubModel.gltf" id="1_d7f7q"]
+[ext_resource type="Script" uid="uid://b5od6au3gin4c" path="res://assets/models/cubelings/cubelings.gd" id="2_v6egh"]
+
+[node name="Cubeling" type="Node3D"]
+
+[node name="blockbench_export" parent="." instance=ExtResource("1_d7f7q")]
+transform = Transform3D(-0.99644, 0, 0.084304, 0, 1, 0, -0.084304, 0, -0.99644, 0.0488218, 0, 0.0465367)
+script = ExtResource("2_v6egh")
+
+[node name="Ears" parent="blockbench_export/Node/Hopling" index="1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.12827, 0)
+
+[editable path="blockbench_export"]

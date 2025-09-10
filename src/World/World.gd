@@ -278,6 +278,7 @@ func _ready() -> void:
 	biome_map = BiomeMap.new(biome_seed)
 	biome_map.add_biome(Biomes.RollingHills.new())
 	biome_map.add_biome(Biomes.Grasslands.new())
+	biome_map.add_biome(Biomes.BlackDesert.new())
 	biome_map.add_biome(Biomes.Desert.new())
 	biome_map.add_biome(Biomes.Peaks.new())
 
@@ -1834,7 +1835,6 @@ func _gen_worker(payload: Dictionary) -> void:
 
 	# Rebuild noises from packed params
 
-
 	var N := {
 		"CX":CX_, "CY":CY_, "CZ":CZ_,
 		"height": _mk(payload["noise"]["height"]),
@@ -1851,8 +1851,9 @@ func _gen_worker(payload: Dictionary) -> void:
 	var Biomes = preload("res://src/World/biomes/Biomes.gd")
 	var bmap = BiomeMap.new(int(payload["noise"]["biome"]["seed"]))
 	bmap.add_biome(Biomes.RollingHills.new())
-	bmap.add_biome(Biomes.Grasslands.new())
 	bmap.add_biome(Biomes.Desert.new())
+	bmap.add_biome(Biomes.Grasslands.new())
+	bmap.add_biome(Biomes.BlackDesert.new())
 	bmap.add_biome(Biomes.Peaks.new())
 
 	# Allocate arrays
@@ -2323,7 +2324,7 @@ func _is_terrain(id:int) -> bool:
 	if id == BlockDB.BlockId.GRASS: return true
 	if id == BlockDB.BlockId.DIRT: return true
 	if id == BlockDB.BlockId.STONE: return true
-	if id == BlockDB.BlockId.SAND: return true
+	if id == BlockDB.BlockId.BLACKSAND: return true
 	if id == BlockDB.BlockId.CLAY_TILE: return true
 	if id == BlockDB.BlockId.COBBLE: return true
 	if id == BlockDB.BlockId.STONE_BRICKS: return true

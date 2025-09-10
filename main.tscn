@@ -14,6 +14,7 @@
 [ext_resource type="Script" uid="uid://csididgsnqvfy" path="res://src/UI/location_label.gd" id="11_dg77c"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_0xm2m"]
+sky_top_color = Color(0.313726, 0.729412, 0.835294, 1)
 
 [sub_resource type="Sky" id="Sky_h2yge"]
 sky_material = SubResource("ProceduralSkyMaterial_0xm2m")

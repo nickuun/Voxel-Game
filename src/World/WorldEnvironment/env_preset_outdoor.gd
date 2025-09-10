@@ -3,7 +3,7 @@ extends WorldEnvironment
 
 @export var exposure: float = 1.02         # a hair brighter than neutral
 @export var white_point: float = 6.0       # ACES sweet spot
-@export var sky_brightness: float = 1.6    # slightly lower so sun matters
+@export var sky_brightness: float = 1.4    # slightly lower so sun matters
 
 @export var ambient_energy: float = 0.50   # lower ambient => more sun/shadow contrast
 @export var ambient_from_sky: float = 0.85 # 0..1, how much ambient comes from sky

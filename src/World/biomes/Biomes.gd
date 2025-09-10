@@ -148,8 +148,8 @@ class Grasslands extends Biome:
 # ======================================================================
 # Desert — sandy with stone “pools”
 # ======================================================================
-class Desert extends Biome:
-	func id() -> String: return "desert"
+class BlackDesert extends Biome:
+	func id() -> String: return "black_desert"
 
 	func height(wx:int, wz:int, N:Dictionary, min_y:int, max_y:int) -> int:
 		# dunes: gentle amplitude; a tiny bit of long-wave tilt
@@ -161,7 +161,7 @@ class Desert extends Biome:
 
 	func fill_column(blocks:Array, x:int, z:int, h:int, wx:int, wz:int, N:Dictionary) -> void:
 		for y in range(0, h):
-			var id = 6 # SAND
+			var id = 6 # Blacksand
 			if y < h - 12:
 				# deeper mixes: stone etc
 				id = Biome.pick_weighted(
@@ -256,3 +256,85 @@ class Peaks extends Biome:
 
 
 # ======================================================================
+
+# ======================================================================
+# Desert — sand / red sand strips + TanSand pyramids
+# ======================================================================
+class Desert extends Biome:
+	# Adjust these to your block palette IDs
+	const SAND := 4        # e.g. normal sand
+	const RED_SAND := 7    # e.g. red sand
+	const TAN_SAND := 30   # e.g. tan sand (for pyramids)
+
+	func id() -> String: return "desert"
+
+	func height(wx:int, wz:int, N:Dictionary, min_y:int, max_y:int) -> int:
+		# Gently rolling dunes; flatter than hills, a touch more than grass
+		var base := float(min_y) + 5.0
+		var dunes = N.height.get_noise_2d(wx, wz) * 5.0
+		var long  = N.detail.get_noise_2d(wx * 1, wz * 1) * 1.5
+		var h_f = base + dunes + long
+		return clamp(int(round(h_f)), 1, N.CY - 2)
+
+	func fill_column(blocks:Array, x:int, z:int, h:int, wx:int, wz:int, N:Dictionary) -> void:
+		# Diagonal "striping" by projecting (wx,wz) onto a slanted axis,
+		# with a little band width wobble so it isn't too uniform.
+		var u := wx * 0.82 + wz * 0.57
+		var wobble = 0.5 * (N.variety.get_noise_2d(int(wx/24), int(wz/24)) + 1.0) # [0..1]
+		var band_w := 10 + int(round(4.0 * wobble)) # width ~10..14
+		var band_idx := int(floor(u / float(band_w)))
+		var is_even_band = (abs(band_idx) % 2) == 0
+
+		for y in range(0, h):
+			var id := SAND
+			if y == h - 1:
+				id = SAND if is_even_band else RED_SAND
+			elif y < h - 12:
+				# deeper mix stays mostly sandy with a bit of stone for structure
+				id = Biome.pick_weighted(
+					0.5 * (N.variety.get_noise_3d(wx, y, wz) + 1.0),
+					[[SAND, 6], [RED_SAND, 2], [3, 2]] # SAND, RED_SAND, STONE(3)
+				)
+			blocks[x][y][z] = id
+
+	func decorate(blocks:Array, x:int, z:int, h:int, wx:int, wz:int, N:Dictionary) -> bool:
+		# Rare TanSand pyramids on reasonably flat ground, only on sand/red_sand
+		var top = blocks[x][h-1][z]
+		if not (top == SAND or top == RED_SAND):
+			return false
+
+		# Flat-ish check via slope in the height noise
+		var slope = abs(N.height.get_noise_2d(wx+1, wz) - N.height.get_noise_2d(wx-1, wz)) \
+					+ abs(N.height.get_noise_2d(wx, wz+1) - N.height.get_noise_2d(wx, wz-1))
+		if slope > 0.55:
+			return false
+
+		# Spawn chance (rare)
+		var p = 0.5 * (N.patch.get_noise_2d(wx, wz) + 1.0) # [0..1]
+		if p <= 0.965:
+			return false
+
+		# Pyramid sizing
+		var base_size := 5 + int(round(4.0 * (0.5 * (N.detail.get_noise_2d(wx*2, wz*2) + 1.0)))) # 5..9
+		if base_size % 2 == 0:
+			base_size += 1
+		var layers := int((base_size + 1) / 2) # e.g., 3..5 layers
+
+		# Build solid step pyramid upward from surface
+		var changed := false
+		for layer in range(layers):
+			var half := int((base_size - 1) / 2) - layer
+			var y := h + layer
+			if y >= N.CY: break
+			for dx in range(-half, half + 1):
+				for dz in range(-half, half + 1):
+					var px := x + dx
+					var pz := z + dz
+					if px < 0 or px >= N.CX or pz < 0 or pz >= N.CZ:
+						continue
+					# don't overwrite existing solid structures above
+					if blocks[px][y][pz] == 0:
+						blocks[px][y][pz] = TAN_SAND
+						changed = true
+
+		return changed

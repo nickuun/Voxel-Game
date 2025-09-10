@@ -35,7 +35,7 @@ static func entity_facing_yaw_deg(id: int) -> float:
 # ----- Blocks -----
 # ----- Blocks -----
 enum BlockId {
-	AIR=0, GRASS=1, DIRT=2, STONE=3, WOOD=4, LEAVES=5, SAND=6,
+	AIR=0, GRASS=1, DIRT=2, STONE=3, WOOD=4, LEAVES=5, BLACKSAND=6,
 	LOG=8, SAPLING=9,
 	GLASS=10,
 	COBBLE=11,
@@ -60,8 +60,6 @@ enum BlockId {
 	# Jungle
 	LOG_JUNGLE=33, LOG_JUNGLE_X=34, LOG_JUNGLE_Z=35, WOOD_JUNGLE=36,
 	
-	
-	
 	CHEST = 37,
 }
 
@@ -71,7 +69,7 @@ enum NotchId {
 	NOTCH_DIRT  = 1002,
 	NOTCH_STONE = 1003,
 	NOTCH_WOOD  = 1004,
-	NOTCH_SAND  = 1005,
+	NOTCH_BLACKSAND  = 1005,
 	NOTCH_GLASS = 1006,
 	NOTCH_COBBLE = 1007,
 	NOTCH_STONE_BRICKS = 1008,
@@ -92,7 +90,7 @@ static var NOTCH_TO_BASE := {
 	NotchId.NOTCH_DIRT:  BlockId.DIRT,
 	NotchId.NOTCH_STONE: BlockId.STONE,
 	NotchId.NOTCH_WOOD:  BlockId.WOOD,
-	NotchId.NOTCH_SAND:  BlockId.SAND,
+	NotchId.NOTCH_BLACKSAND:  BlockId.BLACKSAND,
 	NotchId.NOTCH_GLASS: BlockId.GLASS,
 	NotchId.NOTCH_COBBLE: BlockId.COBBLE,
 	NotchId.NOTCH_STONE_BRICKS: BlockId.STONE_BRICKS,
@@ -112,7 +110,7 @@ static var BASE_TO_NOTCH := {
 	BlockId.DIRT:  NotchId.NOTCH_DIRT,
 	BlockId.STONE: NotchId.NOTCH_STONE,
 	BlockId.WOOD:  NotchId.NOTCH_WOOD,
-	BlockId.SAND:  NotchId.NOTCH_SAND,
+	BlockId.BLACKSAND:  NotchId.NOTCH_BLACKSAND,
 	BlockId.GLASS: NotchId.NOTCH_GLASS,
 	BlockId.COBBLE: NotchId.NOTCH_COBBLE,
 	BlockId.STONE_BRICKS: NotchId.NOTCH_STONE_BRICKS,
@@ -221,7 +219,7 @@ static var BLOCKS := {
 		#"cull_same_transparent": false,     # <— NEW: keep faces between touching leaves
 		#"two_sided": true
 	#},
-	BlockId.SAND:   {"name":"Sand", "opaque":true,  "tex_all":2},
+	BlockId.BLACKSAND:   {"name":"Sand", "opaque":true,  "tex_all":2},
 	BlockId.GLASS: {
 		"name":"Glass",
 		"opaque": false,
