@@ -10,6 +10,6 @@ transform = Transform3D(-0.99644, 0, 0.084304, 0, 1, 0, -0.084304, 0, -0.99644, 
 script = ExtResource("2_v6egh")
 
 [node name="Ears" parent="blockbench_export/Node/Hopling" index="1"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.12827, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.166739, 0)
 
 [editable path="blockbench_export"]
